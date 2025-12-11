@@ -2,12 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# instala dependências
-COPY requirements.txt .
+COPY app/requirements.txt ./requirements.txt
+
 RUN pip install --no-cache-dir -r requirements.txt
 
-# copia o código (inclui main.py, app/, src/ etc)
-COPY . .
+COPY app ./app
 
-# entrypoint do Cloud Run Job
-CMD ["python", "src/main.py"]
+CMD ["python", "app/src/main.py"]
