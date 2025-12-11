@@ -3,26 +3,13 @@ import datetime
 from google.cloud import bigquery
 
 # Variáveis de ambiente (vamos configurar no Cloud Run)
-PROJECT_ID = os.environ.get("PROJECT_ID")
-SOURCE_DATASET = os.environ.get("SOURCE_DATASET")
-TARGET_DATASET = os.environ.get("TARGET_DATASET")
-GCS_BUCKET = os.environ.get("GCS_BUCKET")
-LOCATION_SOURCE = os.environ.get("LOCATION_SOURCE")   # ex: "southamerica-east1"
-LOCATION_TARGET = os.environ.get("LOCATION_TARGET")   # ex: "US"
+PROJECT_ID = 'jota-dados-integracao-ga4'
+SOURCE_DATASET = 'views_ga4'
+TARGET_DATASET = 'viwes_ga4_us'
+GCS_BUCKET = ' bigquery-dataset-southamerica-east1'
+LOCATION_SOURCE = 'southamerica-east1'   # ex: "southamerica-east1"
+LOCATION_TARGET = 'US'   # ex: "US"
 
-if not all([
-    PROJECT_ID,
-    SOURCE_DATASET,
-    TARGET_DATASET,
-    GCS_BUCKET,
-    LOCATION_SOURCE,
-    LOCATION_TARGET,
-]):
-    raise RuntimeError(
-        "Defina as variáveis de ambiente: "
-        "PROJECT_ID, SOURCE_DATASET, TARGET_DATASET, "
-        "GCS_BUCKET, LOCATION_SOURCE, LOCATION_TARGET"
-    )
 
 bq_client = bigquery.Client(project=PROJECT_ID)
 
