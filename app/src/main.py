@@ -74,7 +74,7 @@ def mirror_dataset() -> None:
 
     for table in tables:
         # só copia TABLE (ignora VIEW, MATERIALIZED_VIEW etc)
-        if table.table_type != "TABLE":
+        if table.table_type != "VIEW":
             print(f"[SKIP] {table.table_id} (tipo: {table.table_type})")
             continue
 
