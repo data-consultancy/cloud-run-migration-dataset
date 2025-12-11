@@ -3,12 +3,12 @@ import datetime
 from google.cloud import bigquery
 
 # Variáveis de ambiente (vamos configurar no Cloud Run)
-PROJECT_ID = 'jota-dados-integracao-ga4'
-SOURCE_DATASET = 'views_ga4'
-TARGET_DATASET = 'viwes_ga4_us'
-GCS_BUCKET = ' bigquery-dataset-southamerica-east1'
-LOCATION_SOURCE = 'southamerica-east1'   # ex: "southamerica-east1"
-LOCATION_TARGET = 'US'   # ex: "US"
+PROJECT_ID = os.environ.get("PROJECT_ID")
+SOURCE_DATASET = os.environ.get("SOURCE_DATASET")
+TARGET_DATASET = os.environ.get("TARGET_DATASET")
+GCS_BUCKET = os.environ.get("GCS_BUCKET")
+LOCATION_SOURCE = os.environ.get("LOCATION_SOURCE")   # ex: "southamerica-east1"
+LOCATION_TARGET = os.environ.get("LOCATION_TARGET")   # ex: "US"
 
 
 bq_client = bigquery.Client(project=PROJECT_ID)
@@ -74,7 +74,7 @@ def mirror_dataset() -> None:
 
     for table in tables:
         # só copia TABLE (ignora VIEW, MATERIALIZED_VIEW etc)
-        if table.table_type != "VIEW":
+        if table.table_type != "TABLE":
             print(f"[SKIP] {table.table_id} (tipo: {table.table_type})")
             continue
 
