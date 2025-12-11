@@ -1,0 +1,9 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'us-docker.pkg.dev/jota-dados-integracao-ga4/cloud-run-jobs/mirror-image', '.']
+
+images:
+  - 'us-docker.pkg.dev/jota-dados-integracao-ga4/cloud-run-jobs/mirror-image'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
