@@ -16,10 +16,12 @@ bq_client = bigquery.Client(project=PROJECT_ID, location="US")
 def export_table_(source_table_id: str, export_uri: str) -> None:
     """Exporta uma tabela do BigQuery para o GCS em formato PARQUET."""
     now_sp = datetime.datetime.now(TZ_SP)
-    d1 = (now_sp.date() - datetime.timedelta(days=1))
+    previous_date = (now_sp.date() - datetime.timedelta(days=1))
 
-    source_table_id = f"{PROJECT_ID}.{SOURCE_DATASET}.events_{d1:%Y%m%d}"
-    export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={d1:%Y%m%d}/*.parquet"
+    suffix = previous_date.strftime("%Y%m%d")
+
+    source_table_id = f"{PROJECT_ID}.{SOURCE_DATASET}.events_{suffix}"
+    export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
 
     print(f"[EXPORT] {source_table_id} -> {export_uri}")
 
