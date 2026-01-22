@@ -5,7 +5,7 @@ from google.api_core.exceptions import NotFound
 from zoneinfo import ZoneInfo
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
-SOURCE_DATASET = os.environ.get("SOURCE_DATASET")
+DATASET = os.environ.get("DATASET")
 GCS_BUCKET = os.environ.get("GCS_BUCKET")
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 
@@ -47,7 +47,7 @@ def main():
 
     suffix = previous_date.strftime("%Y%m%d")
 
-    source_table_id = f"{PROJECT_ID}.{SOURCE_DATASET}.events_{suffix}"
+    source_table_id = f"{PROJECT_ID}.{DATASET}.events_{suffix}"
     export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
 
     bq_client = bigquery.Client(project=PROJECT_ID, location="US")
