@@ -5,7 +5,8 @@ from google.api_core.exceptions import NotFound
 from zoneinfo import ZoneInfo
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
-DATASET = os.environ.get("DATASET")
+DATASET_RAW = os.environ.get("DATASET_RAW")
+DATASET_SILVER = os.environ.get("DATASET_SILVER")
 GCS_BUCKET = os.environ.get("GCS_BUCKET")
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 TARGET_TABLE = os.environ.get("TARGET_TABLE")
@@ -64,7 +65,7 @@ def load_parquet_from_gcs_into_bq(target_table_id, gcs_uri, bq_client) -> None:
 
 
 def main():
-    
+
     if RUN_DATE:
         suffix = RUN_DATE
     else:   
@@ -73,10 +74,10 @@ def main():
 
         suffix = previous_date.strftime("%Y%m%d")
 
-    source_table_id = f"{PROJECT_ID}.{DATASET}.events_{suffix}"
+    source_table_id = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
     gcs_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
 
-    target_table_id = f"{PROJECT_ID}.{DATASET}.{TARGET_TABLE}"
+    target_table_id = f"{PROJECT_ID}.{DATASET_SILVER}.{TARGET_TABLE}"
 
     bq_client = bigquery.Client(project=PROJECT_ID, location="US")
 
