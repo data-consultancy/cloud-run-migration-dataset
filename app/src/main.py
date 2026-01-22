@@ -10,18 +10,10 @@ GCS_BUCKET = os.environ.get("GCS_BUCKET")
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 
 
-bq_client = bigquery.Client(project=PROJECT_ID, location="US")
 
 
-def export_table_(source_table_id: str, export_uri: str) -> None:
+def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
     """Exporta uma tabela do BigQuery para o GCS em formato PARQUET."""
-    now_sp = datetime.datetime.now(TZ_SP)
-    previous_date = (now_sp.date() - datetime.timedelta(days=1))
-
-    suffix = previous_date.strftime("%Y%m%d")
-
-    source_table_id = f"{PROJECT_ID}.{SOURCE_DATASET}.events_{suffix}"
-    export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
 
     print(f"[EXPORT] {source_table_id} -> {export_uri}")
 
@@ -46,3 +38,23 @@ def export_table_(source_table_id: str, export_uri: str) -> None:
     extract_job.result()
 
     print(f"[EXPORT OK] {source_table_id}")
+
+
+
+def main():
+    now_sp = datetime.datetime.now(TZ_SP)
+    previous_date = (now_sp.date() - datetime.timedelta(days=1))
+
+    suffix = previous_date.strftime("%Y%m%d")
+
+    source_table_id = f"{PROJECT_ID}.{SOURCE_DATASET}.events_{suffix}"
+    export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
+
+    bq_client = bigquery.Client(project=PROJECT_ID, location="US")
+
+
+    export_table_to_bucket(source_table_id, export_uri, bq_client)
+
+
+if __name__ == "__main__":
+    main()
