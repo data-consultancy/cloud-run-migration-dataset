@@ -10,8 +10,6 @@ GCS_BUCKET = os.environ.get("GCS_BUCKET")
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 
 
-
-
 def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
     """Exporta uma tabela do BigQuery para o GCS em formato PARQUET."""
 
