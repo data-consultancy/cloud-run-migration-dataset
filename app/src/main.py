@@ -119,7 +119,7 @@ def main():
 
     source_table_id = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
     target_table_id = f"{PROJECT_ID}.{DATASET_SILVER}.{TARGET_TABLE}"
-    gcs_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
+    gcs_uri = f"gs://{GCS_BUCKET}/ga4/silver/events/anomesdia={suffix}/*.parquet"
 
     bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
 
