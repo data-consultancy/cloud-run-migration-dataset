@@ -8,12 +8,14 @@ PROJECT_ID = os.environ.get("PROJECT_ID")
 DATASET = os.environ.get("DATASET")
 GCS_BUCKET = os.environ.get("GCS_BUCKET")
 TZ_SP = ZoneInfo("America/Sao_Paulo")
+TARGET_TABLE = os.environ.get("TARGET_TABLE")
+RUN_DATE = os.environ.get("RUN_DATE")
 
 
-def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
+def export_table_to_bucket(source_table_id, gcs_uri, bq_client) -> None:
     """Exporta uma tabela do BigQuery para o GCS em formato PARQUET."""
 
-    print(f"[EXPORT] {source_table_id} -> {export_uri}")
+    print(f"[EXPORT] {source_table_id} -> {gcs_uri}")
 
     try:
         bq_client.get_table(source_table_id)
@@ -28,7 +30,7 @@ def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
 
     extract_job = bq_client.extract_table(
         source_table_id,
-        export_uri,
+        gcs_uri,
         location="US",
         job_config=job_config,
     )
@@ -38,18 +40,49 @@ def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
     print(f"[EXPORT OK] {source_table_id}")
 
 
-def main():
-    now_sp = datetime.datetime.now(TZ_SP)
-    previous_date = (now_sp.date() - datetime.timedelta(days=1))
+def load_parquet_from_gcs_into_bq(target_table_id, gcs_uri, bq_client) -> None:
+    """
+    Lê o Parquet do GCS (do dia) e faz INSERT na tabela do BigQuery via Load Job (WRITE_APPEND).
+    """
+    print(f"[LOAD->BQ] {gcs_uri} -> {target_table_id}")
 
-    suffix = previous_date.strftime("%Y%m%d")
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.PARQUET,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        autodetect=False,
+    )
+
+    load_job = bq_client.load_table_from_uri(
+        gcs_uri,
+        target_table_id,
+        location="US",
+        job_config=job_config,
+    )
+    load_job.result()
+
+    print(f"[LOAD OK] {target_table_id}")
+
+
+def main():
+    
+    if RUN_DATE:
+        suffix = RUN_DATE
+    else:   
+        now_sp = datetime.datetime.now(TZ_SP)
+        previous_date = (now_sp.date() - datetime.timedelta(days=1))
+
+        suffix = previous_date.strftime("%Y%m%d")
 
     source_table_id = f"{PROJECT_ID}.{DATASET}.events_{suffix}"
-    export_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
+    gcs_uri = f"gs://{GCS_BUCKET}/ga4/events/anomesdia={suffix}/*.parquet"
+
+    target_table_id = f"{PROJECT_ID}.{DATASET}.{TARGET_TABLE}"
 
     bq_client = bigquery.Client(project=PROJECT_ID, location="US")
 
-    export_table_to_bucket(source_table_id, export_uri, bq_client)
+    export_table_to_bucket(source_table_id, gcs_uri, bq_client)
+
+    load_parquet_from_gcs_into_bq(target_table_id, gcs_uri, bq_client)
 
 
 if __name__ == "__main__":
