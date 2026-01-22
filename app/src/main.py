@@ -38,7 +38,6 @@ def export_table_to_bucket(source_table_id, export_uri, bq_client) -> None:
     print(f"[EXPORT OK] {source_table_id}")
 
 
-
 def main():
     now_sp = datetime.datetime.now(TZ_SP)
     previous_date = (now_sp.date() - datetime.timedelta(days=1))
