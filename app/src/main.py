@@ -21,10 +21,6 @@ def export_flatten_ga4_to_gcs(
     gcs_uri: str,
     bq_client: bigquery.Client,
 ) -> None:
-    """
-    Executa um EXPORT DATA com SELECT flatten,
-    gerando Parquet JÁ no schema correto (silver).
-    """
 
     print(f"[EXPORT-FLATTEN] {source_table_id} -> {gcs_uri}")
 
@@ -93,9 +89,7 @@ def load_parquet_into_bq(
     gcs_uri: str,
     bq_client: bigquery.Client,
 ) -> None:
-    """
-    Faz APPEND do Parquet (schema já correto) na tabela silver.
-    """
+   
 
     print(f"[LOAD] {gcs_uri} -> {target_table_id}")
 
@@ -115,7 +109,6 @@ def load_parquet_into_bq(
     print("[LOAD OK]")
 
 
-
 def main():
     
     if RUN_DATE:
@@ -126,7 +119,7 @@ def main():
 
     source_table_id = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
     target_table_id = f"{PROJECT_ID}.{DATASET_SILVER}.{TARGET_TABLE}"
-    gcs_uri = f"gs://{GCS_BUCKET}/ga4/silver/anomesdia={suffix}/*.parquet"
+    gcs_uri = f"gs://{GCS_BUCKET}/ga4/silver/events/anomesdia={suffix}/*.parquet"
 
     bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
 
