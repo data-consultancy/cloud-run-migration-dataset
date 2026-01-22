@@ -49,7 +49,6 @@ def main():
 
     bq_client = bigquery.Client(project=PROJECT_ID, location="US")
 
-
     export_table_to_bucket(source_table_id, export_uri, bq_client)
 
 
