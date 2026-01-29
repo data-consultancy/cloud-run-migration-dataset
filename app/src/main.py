@@ -3,7 +3,7 @@ import datetime
 from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
-from src.utils.query_ga4_events import query_ga4_events
+from utils.query_ga4_events import query_ga4_events
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
