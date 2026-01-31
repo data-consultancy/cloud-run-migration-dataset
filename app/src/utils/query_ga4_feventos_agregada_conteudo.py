@@ -8,7 +8,7 @@ def query_ga4_feventos_agregada_conteudo(source_table_id_feventos_agregada_conte
                     user_pseudo_id,
                     MAX(user_company) AS empresa_encontrada,
                     MAX(is_pro_user_flag) AS status_pro_encontrado
-                FROM `jota-dados-integracao-ga4.ga4_metrics_us.fEvents`
+                FROM `{source_table_id_feventos_agregada_conteudo}`
                 WHERE user_company IS NOT NULL OR is_pro_user_flag IS NOT NULL
                 GROUP BY 1, 2
             )
@@ -44,6 +44,6 @@ def query_ga4_feventos_agregada_conteudo(source_table_id_feventos_agregada_conte
 
             GROUP BY
                 1, 2, 3, 4, 5, 6; -- Adicionei o índice 4 (geo) no group by
-                    """
+"""
     
     return query
