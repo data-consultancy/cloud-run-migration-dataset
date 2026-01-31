@@ -1,4 +1,4 @@
-def query_ga4_feventos_agregada_conteudo(source_table_id_feventos_agregada_conteudo):
+def query_ga4_fevents_agregada_conteudo(source_table_id_fevents_agregada_conteudo):
     query = f"""
         WITH 
             -- 1. MAPA DE ATRIBUTOS (Para corrigir User Company/Pro Nulos)
@@ -8,7 +8,7 @@ def query_ga4_feventos_agregada_conteudo(source_table_id_feventos_agregada_conte
                     user_pseudo_id,
                     MAX(user_company) AS empresa_encontrada,
                     MAX(is_pro_user_flag) AS status_pro_encontrado
-                FROM `{source_table_id_feventos_agregada_conteudo}`
+                FROM `{source_table_id_fevents_agregada_conteudo}`
                 WHERE user_company IS NOT NULL OR is_pro_user_flag IS NOT NULL
                 GROUP BY 1, 2
             )
@@ -32,7 +32,7 @@ def query_ga4_feventos_agregada_conteudo(source_table_id_feventos_agregada_conte
                 COUNT(*) AS pageviews,
                 COUNT(DISTINCT t1.user_pseudo_id) AS leitores_unicos_aprox
 
-            FROM `{source_table_id_feventos_agregada_conteudo}` t1
+            FROM `{source_table_id_fevents_agregada_conteudo}` t1
 
             -- Join para corrigir os nulos de empresa
             LEFT JOIN User_Attributes t2
