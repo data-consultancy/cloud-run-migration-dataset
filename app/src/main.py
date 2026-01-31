@@ -46,7 +46,6 @@ def load_parquet_into_bq(
     gcs_uri: str,
     bq_client: bigquery.Client,
 ) -> None:
-   
 
     print(f"[LOAD] {gcs_uri} -> {target_table_id}")
 
