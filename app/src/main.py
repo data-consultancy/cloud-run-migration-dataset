@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
 from utils.query_ga4_events import query_ga4_events
+from utils.query_ga4_fevents import query_ga4_fevents
+
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -85,10 +87,18 @@ def main():
         print(f"[SKIP] Tabela não encontrada: {source_table_id}")
         return
 
-    query = query_ga4_events(source_table_id)
-
-    export_flatten_ga4_to_gcs(source_table_id, gcs_uri, bq_client, query)
+    query_events = query_ga4_events(source_table_id)
+    export_flatten_ga4_to_gcs(source_table_id, gcs_uri, bq_client, query_events)
     load_parquet_into_bq(target_table_id, gcs_uri, bq_client)
+
+
+    source_table_id_fevents = f"{PROJECT_ID}.{DATASET_SILVER}.ga4_events"
+    target_table_id_fevents = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
+    gcs_uri_fevents = f"gs://{GCS_BUCKET}/ga4/silver/fevents/anomesdia={suffix}/*.parquet"
+    query_fevents = query_ga4_fevents(source_table_id_fevents)
+
+    export_flatten_ga4_to_gcs(source_table_id_fevents, gcs_uri_fevents, bq_client, query_fevents)
+    load_parquet_into_bq(target_table_id_fevents, gcs_uri_fevents, bq_client)
 
 
 if __name__ == "__main__":
