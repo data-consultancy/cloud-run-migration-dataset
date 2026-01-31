@@ -82,5 +82,7 @@ def query_ga4_fevents(source_table_id_fevents):
             device_category, device_operating_system, device_operating_system_version,
             device_web_info_browser, device_browser, device_browser_version,
             device_language, device_mobile_brand_name, device_mobile_model_name,
-            traffic_source_source, traffic_source_medium, traffic_source_name;
+            traffic_source_source, traffic_source_medium, traffic_source_name
     """
+
+    return query
