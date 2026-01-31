@@ -100,7 +100,7 @@ def main():
     ## query_fevents_agregada_main
     source_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
     target_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main"
-    gcs_uri_fevents_agregada_main = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_Mmin/*.parquet"
+    gcs_uri_fevents_agregada_main = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_main/*.parquet"
     query_fevents_agregada_main = query_ga4_fevents_agregada_main(source_table_id_fevents_agregada_main)
 
     export_flatten_ga4_to_gcs(source_table_id_fevents_agregada_main, gcs_uri_fevents_agregada_main, bq_client, query_fevents_agregada_main)
