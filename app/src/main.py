@@ -7,7 +7,6 @@ from utils.query_ga4_events import query_ga4_events
 from utils.query_ga4_fevents import query_ga4_fevents
 
 
-
 PROJECT_ID = os.environ.get("PROJECT_ID")
 DATASET_RAW = os.environ.get("DATASET_RAW")        
 DATASET_SILVER = os.environ.get("DATASET_SILVER") 
