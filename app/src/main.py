@@ -6,6 +6,9 @@ from google.api_core.exceptions import NotFound
 from utils.query_ga4_events import query_ga4_events
 from utils.query_ga4_fevents import query_ga4_fevents
 from utils.query_ga4_fevents_agregada_main import query_ga4_fevents_agregada_main
+from utils.query_ga4_feventos_agregada_conteudo import query_ga4_feventos_agregada_conteudo
+from utils.query_ga4_duser_company import query_ga4_duser_company
+
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -97,7 +100,7 @@ def main():
     export_flatten_ga4_to_gcs(source_table_id_fevents, gcs_uri_fevents, bq_client, query_fevents)
     load_parquet_into_bq(target_table_id_fevents, gcs_uri_fevents, bq_client)
 
-    ## query_fevents_agregada_main
+    ## ga4_fevents_agregada_main
     source_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
     target_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main"
     gcs_uri_fevents_agregada_main = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_main/*.parquet"
@@ -105,6 +108,25 @@ def main():
 
     export_flatten_ga4_to_gcs(source_table_id_fevents_agregada_main, gcs_uri_fevents_agregada_main, bq_client, query_fevents_agregada_main)
     load_parquet_into_bq(target_table_id_fevents_agregada_main, gcs_uri_fevents_agregada_main, bq_client)
+
+    ## ga4_ga4_feventos_agregada_conteudo
+    source_table_id_fevents_agregada_conteudo = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
+    target_table_id_fevents_agregada_conteudo = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo"
+    gcs_uri_fevents_agregada_conteudo = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_conteudo/*.parquet"
+    query_fevents_agregada_conteudo = query_ga4_fevents_agregada_main(source_table_id_fevents_agregada_conteudo)
+
+    export_flatten_ga4_to_gcs(source_table_id_fevents_agregada_conteudo, gcs_uri_fevents_agregada_conteudo, bq_client, query_fevents_agregada_conteudo)
+    load_parquet_into_bq(target_table_id_fevents_agregada_conteudo, gcs_uri_fevents_agregada_conteudo, bq_client)
+
+    ## ga4_ga4_duser_company
+    source_table_id_duser_company = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
+    target_table_id_duser_company = f"{PROJECT_ID}.{DATASET_SILVER}.dUser_Company"
+    gcs_uri_duser_company = f"gs://{GCS_BUCKET}/ga4/silver/duser_company/*.parquet"
+    query_duser_company = query_ga4_duser_company(source_table_id_duser_company)
+
+    export_flatten_ga4_to_gcs(source_table_id_duser_company, gcs_uri_duser_company, bq_client, query_duser_company)
+    load_parquet_into_bq(target_table_id_duser_company, gcs_uri_duser_company, bq_client)
+
 
 if __name__ == "__main__":
     main()
