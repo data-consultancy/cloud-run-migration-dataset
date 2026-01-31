@@ -5,6 +5,7 @@ from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
 from utils.query_ga4_events import query_ga4_events
 from utils.query_ga4_fevents import query_ga4_fevents
+from utils.query_ga4_fevents_agregada_main import query_ga4_fevents_agregada_main
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -38,8 +39,6 @@ def export_flatten_ga4_to_gcs(
     job = bq_client.query(sql, location=BQ_LOCATION)
     job.result()
 
-    print("[EXPORT-FLATTEN OK]")
-
 
 def load_parquet_into_bq(
     target_table_id: str,
@@ -47,7 +46,7 @@ def load_parquet_into_bq(
     bq_client: bigquery.Client,
 ) -> None:
 
-    print(f"[LOAD] {gcs_uri} -> {target_table_id}")
+    print(f"{gcs_uri} -> {target_table_id}")
 
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.PARQUET,
@@ -62,7 +61,6 @@ def load_parquet_into_bq(
     )
     job.result()
 
-    print("[LOAD OK]")
 
 
 def main():
@@ -82,22 +80,31 @@ def main():
     try:
         bq_client.get_table(source_table_id)
     except NotFound:
-        print(f"[SKIP] Tabela não encontrada: {source_table_id}")
+        print(f"Tabela não encontrada: {source_table_id}")
         return
 
+    ## GA4_EVENTS 
     query_events = query_ga4_events(source_table_id)
     export_flatten_ga4_to_gcs(source_table_id, gcs_uri, bq_client, query_events)
     load_parquet_into_bq(target_table_id, gcs_uri, bq_client)
 
-
+    ## GA4_FEVENTS
     source_table_id_fevents = f"{PROJECT_ID}.{DATASET_SILVER}.ga4_events"
     target_table_id_fevents = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
-    gcs_uri_fevents = f"gs://{GCS_BUCKET}/ga4/silver/fevents/anomesdia={suffix}/*.parquet"
+    gcs_uri_fevents = f"gs://{GCS_BUCKET}/ga4/silver/fevents/*.parquet"
     query_fevents = query_ga4_fevents(source_table_id_fevents)
 
     export_flatten_ga4_to_gcs(source_table_id_fevents, gcs_uri_fevents, bq_client, query_fevents)
     load_parquet_into_bq(target_table_id_fevents, gcs_uri_fevents, bq_client)
 
+    ## query_fevents_agregada_main
+    source_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
+    target_table_id_fevents_agregada_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main"
+    gcs_uri_fevents_agregada_main = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_Mmin/*.parquet"
+    query_fevents_agregada_main = query_ga4_fevents_agregada_main(source_table_id_fevents_agregada_main)
+
+    export_flatten_ga4_to_gcs(source_table_id_fevents_agregada_main, gcs_uri_fevents_agregada_main, bq_client, query_fevents_agregada_main)
+    load_parquet_into_bq(target_table_id_fevents_agregada_main, gcs_uri_fevents_agregada_main, bq_client)
 
 if __name__ == "__main__":
     main()
