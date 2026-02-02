@@ -26,7 +26,7 @@ def query_ga4_fevents_agregada_main(source_table_id_agregada_main):
             -- Melhor métrica para somar ao longo do mês
             SUM(CASE WHEN event_name = 'session_start' THEN 1 ELSE 0 END) AS total_sessoes
 
-        FROM `jota-dados-integracao-ga4.ga4_metrics_us.fEvents`
+        FROM `{source_table_id_agregada_main}`
 
         GROUP BY
             1, 2, 3, 4, 5, 6, 7, 8

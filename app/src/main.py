@@ -113,7 +113,7 @@ def main():
     source_table_id_fevents_agregada_conteudo = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
     target_table_id_fevents_agregada_conteudo = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo"
     gcs_uri_fevents_agregada_conteudo = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_conteudo/*.parquet"
-    query_fevents_agregada_conteudo = query_ga4_fevents_agregada_main(source_table_id_fevents_agregada_conteudo)
+    query_fevents_agregada_conteudo = query_ga4_fevents_agregada_conteudo(source_table_id_fevents_agregada_conteudo)
 
     export_flatten_ga4_to_gcs(source_table_id_fevents_agregada_conteudo, gcs_uri_fevents_agregada_conteudo, bq_client, query_fevents_agregada_conteudo)
     load_parquet_into_bq(target_table_id_fevents_agregada_conteudo, gcs_uri_fevents_agregada_conteudo, bq_client)
