@@ -12,11 +12,20 @@ RUN_DATE = os.environ.get("RUN_DATE")
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 
+T_GA4_EVENTS_V2 = "ga4_events_v2"
+T_FEVENTS_V2 = "fEvents_v2"
+T_AG_MAIN_V2 = "fEventos_Agregada_Main_v2"
+T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
+T_DUSER_V2 = "dUser_Company_v2"
 
-def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> None:
-    # 1) ga4_events (flatten slim: 1 linha por evento)
-    bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.ga4_events` (
+
+def run_query(bq: bigquery.Client, sql: str) -> None:
+    bq.query(sql, location=BQ_LOCATION).result()
+
+
+def ensure_tables_v2(bq: bigquery.Client) -> None:
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}` (
       event_date_parsed DATE,
       event_timestamp INT64,
       event_name STRING,
@@ -56,11 +65,10 @@ def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> 
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id;
-    """, location=BQ_LOCATION).result()
+    """)
 
-    # 2) fEvents (fato, 1 linha por evento)
-    bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEvents` (
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}` (
       event_date_parsed DATE,
       event_timestamp INT64,
       event_ts_utc TIMESTAMP,
@@ -101,11 +109,10 @@ def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> 
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id, session_id;
-    """, location=BQ_LOCATION).result()
+    """)
 
-    # 3) agregadas particionadas
-    bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEventos_Agregada_Main` (
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}` (
       data_evento DATE,
       event_sk INT64,
       sk_geo INT64,
@@ -120,10 +127,10 @@ def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> 
     )
     PARTITION BY data_evento
     CLUSTER BY event_sk, traffic_sk, user_company;
-    """, location=BQ_LOCATION).result()
+    """)
 
-    bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEventos_Agregada_Conteudo` (
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}` (
       data_evento DATE,
       page_sk INT64,
       traffic_sk INT64,
@@ -135,10 +142,10 @@ def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> 
     )
     PARTITION BY data_evento
     CLUSTER BY page_sk, traffic_sk;
-    """, location=BQ_LOCATION).result()
+    """)
 
-    bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.dUser_Company` (
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` (
       user_company STRING,
       plano_atual STRING,
       data_primeira_aparicao DATE,
@@ -148,44 +155,19 @@ def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> 
       segmento_mercado STRING,
       account_manager STRING
     );
-    """, location=BQ_LOCATION).result()
+    """)
 
 
-def run_query(bq: bigquery.Client, sql: str) -> None:
-    job = bq.query(sql, location=BQ_LOCATION)
-    job.result()
-
-
-def main():
-    if RUN_DATE:
-        suffix = RUN_DATE
-    else:
-        now_sp = datetime.datetime.now(TZ_SP)
-        suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
-
-    day_date = f"PARSE_DATE('%Y%m%d', '{suffix}')"
-
-    bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-
-    # valida tabela raw do dia
+def process_day(bq: bigquery.Client, suffix: str) -> None:
+    day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
-    try:
-        bq.get_table(source_events_day)
-    except NotFound:
-        print(f"Tabela não encontrada: {source_events_day}")
-        return
 
-    ensure_tables(bq, PROJECT_ID, DATASET_SILVER)
-
-    # =========================
-    # 1) RAW -> ga4_events (somente o dia)
-    # =========================
+    # 1) RAW day -> ga4_events_v2
     run_query(bq, f"""
-    -- idempotência do dia
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.ga4_events`
-    WHERE event_date_parsed = {day_date};
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
+    WHERE event_date_parsed = {day_date_expr};
 
-    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.ga4_events`
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
     SELECT
       PARSE_DATE('%Y%m%d', e.event_date) AS event_date_parsed,
       e.event_timestamp,
@@ -195,7 +177,6 @@ def main():
       e.stream_id,
       SAFE_CAST(e.event_value_in_usd AS FLOAT64) AS event_value_in_usd,
 
-      -- session + traffic params (sem explodir em linhas)
       (SELECT COALESCE(ep.value.int_value, SAFE_CAST(ep.value.string_value AS INT64))
        FROM UNNEST(e.event_params) ep
        WHERE ep.key = 'ga_session_id'
@@ -229,42 +210,35 @@ def main():
       e.device.mobile_brand_name AS device_mobile_brand_name,
       e.device.mobile_model_name AS device_mobile_model_name
     FROM `{source_events_day}` e
-    WHERE PARSE_DATE('%Y%m%d', e.event_date) = {day_date};
+    WHERE PARSE_DATE('%Y%m%d', e.event_date) = {day_date_expr};
     """)
 
-    # =========================
-    # 2) ga4_events -> fEvents (somente o dia)
-    # =========================
+    # 2) ga4_events_v2 -> fEvents_v2
     run_query(bq, f"""
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
-    WHERE event_date_parsed = {day_date};
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
+    WHERE event_date_parsed = {day_date_expr};
 
-    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
     WITH base AS (
       SELECT
         g.*,
-
-        -- fill-down por sessão (barato porque é só o dia)
         LAST_VALUE(param_source IGNORE NULLS) OVER(
           PARTITION BY user_pseudo_id, session_id
           ORDER BY event_timestamp
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS source_final,
-
         LAST_VALUE(param_medium IGNORE NULLS) OVER(
           PARTITION BY user_pseudo_id, session_id
           ORDER BY event_timestamp
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS medium_final,
-
         LAST_VALUE(param_campaign IGNORE NULLS) OVER(
           PARTITION BY user_pseudo_id, session_id
           ORDER BY event_timestamp
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS campaign_final
-
-      FROM `{PROJECT_ID}.{DATASET_SILVER}.ga4_events` g
-      WHERE event_date_parsed = {day_date}
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}` g
+      WHERE event_date_parsed = {day_date_expr}
     )
     SELECT
       event_date_parsed,
@@ -316,12 +290,7 @@ def main():
 
       ABS(FARM_FINGERPRINT(CONCAT(user_pseudo_id, CAST(event_timestamp AS STRING), event_name))) AS fact_id,
 
-      -- user_id: tenta “preencher” por user_pseudo_id no dia
-      COALESCE(
-        MAX(user_id_param) OVER(PARTITION BY user_pseudo_id),
-        user_id_param
-      ) AS user_id,
-
+      COALESCE(MAX(user_id_param) OVER(PARTITION BY user_pseudo_id), user_id_param) AS user_id,
       user_company,
       user_plan,
       is_pro_user_flag,
@@ -337,73 +306,60 @@ def main():
     FROM base;
     """)
 
-    # =========================
-    # 3) fEvents -> Agregada Main (somente o dia)
-    # =========================
+    # 3) agregada main v2
     run_query(bq, f"""
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main`
-    WHERE data_evento = {day_date};
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}`
+    WHERE data_evento = {day_date_expr};
 
-    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main`
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}`
     SELECT
       event_date_parsed AS data_evento,
-      event_sk,
-      sk_geo,
-      device_sk,
-      traffic_sk,
-      user_company,
-      user_plan,
-      is_pro_user_flag,
+      event_sk, sk_geo, device_sk, traffic_sk,
+      user_company, user_plan, is_pro_user_flag,
       COUNT(*) AS total_eventos,
       COUNT(DISTINCT user_pseudo_id) AS usuarios_unicos_aprox,
-      SUM(CASE WHEN event_name = 'session_start' THEN 1 ELSE 0 END) AS total_sessoes
-    FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
-    WHERE event_date_parsed = {day_date}
+      SUM(CASE WHEN event_name='session_start' THEN 1 ELSE 0 END) AS total_sessoes
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
+    WHERE event_date_parsed = {day_date_expr}
     GROUP BY 1,2,3,4,5,6,7,8;
     """)
 
-    # =========================
-    # 4) fEvents -> Agregada Conteudo (somente o dia)
-    # =========================
+    # 4) agregada conteudo v2
     run_query(bq, f"""
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo`
-    WHERE data_evento = {day_date};
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}`
+    WHERE data_evento = {day_date_expr};
 
-    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo`
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}`
     WITH user_attrs AS (
       SELECT
         user_pseudo_id,
         event_date_parsed,
         MAX(user_company) AS empresa_encontrada,
         MAX(is_pro_user_flag) AS status_pro_encontrado
-      FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
-      WHERE event_date_parsed = {day_date}
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
+      WHERE event_date_parsed = {day_date_expr}
         AND (user_company IS NOT NULL OR is_pro_user_flag IS NOT NULL)
       GROUP BY 1,2
     )
     SELECT
       t1.event_date_parsed AS data_evento,
-      t1.page_sk,
-      t1.traffic_sk,
-      t1.sk_geo,
+      t1.page_sk, t1.traffic_sk, t1.sk_geo,
       COALESCE(t2.empresa_encontrada, t1.user_company, 'N/A') AS user_company,
       COALESCE(t2.status_pro_encontrado, t1.is_pro_user_flag, 'false') AS is_pro_user_flag,
       COUNT(*) AS pageviews,
       COUNT(DISTINCT t1.user_pseudo_id) AS leitores_unicos_aprox
-    FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents` t1
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}` t1
     LEFT JOIN user_attrs t2
       ON t1.user_pseudo_id = t2.user_pseudo_id
      AND t1.event_date_parsed = t2.event_date_parsed
-    WHERE t1.event_date_parsed = {day_date}
+    WHERE t1.event_date_parsed = {day_date_expr}
       AND t1.event_name = 'page_view'
     GROUP BY 1,2,3,4,5,6;
     """)
 
-    # =========================
-    # 5) dUser_Company (barato: incremental MERGE)
-    # =========================
+    # 5) dUser_Company v2
     run_query(bq, f"""
-    MERGE `{PROJECT_ID}.{DATASET_SILVER}.dUser_Company` T
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` T
     USING (
       SELECT
         user_company,
@@ -411,8 +367,8 @@ def main():
         MIN(event_date_parsed) AS data_primeira_aparicao,
         MAX(event_date_parsed) AS data_ultima_aparicao,
         COUNT(*) AS total_eventos_historicos
-      FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
-      WHERE event_date_parsed = {day_date}
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
+      WHERE event_date_parsed = {day_date_expr}
         AND user_company IS NOT NULL
       GROUP BY 1
     ) S
@@ -431,7 +387,27 @@ def main():
     );
     """)
 
-    print(f"✅ Pipeline concluído para {suffix}.")
+
+def main():
+    if RUN_DATE:
+        suffix = RUN_DATE
+    else:
+        now_sp = datetime.datetime.now(TZ_SP)
+        suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
+
+    bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+
+    source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
+    try:
+        bq.get_table(source_events_day)
+    except NotFound:
+        print(f"Tabela não encontrada: {source_events_day}")
+        return
+
+    ensure_tables_v2(bq)
+    process_day(bq, suffix)
+
+    print(f"✅ OK: processamento do dia {suffix} concluído.")
 
 
 if __name__ == "__main__":
