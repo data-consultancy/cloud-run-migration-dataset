@@ -2,139 +2,158 @@ import os
 import datetime
 from zoneinfo import ZoneInfo
 from google.cloud import bigquery
-from google.cloud import storage
 from google.api_core.exceptions import NotFound
 
-from utils.query_ga4_events import query_ga4_events
-from utils.query_ga4_fevents import query_ga4_fevents
-from utils.query_ga4_fevents_agregada_main import query_ga4_fevents_agregada_main
-from utils.query_ga4_fevents_agregada_conteudo import query_ga4_fevents_agregada_conteudo
-from utils.query_ga4_duser_company import query_ga4_duser_company
-
-
 PROJECT_ID = os.environ.get("PROJECT_ID")
-DATASET_RAW = os.environ.get("PROJECT_ID") and os.environ.get("DATASET_RAW")
+DATASET_RAW = os.environ.get("DATASET_RAW")
 DATASET_SILVER = os.environ.get("DATASET_SILVER")
-TARGET_TABLE = os.environ.get("TARGET_TABLE")
-GCS_BUCKET = os.environ.get("GCS_BUCKET")
 RUN_DATE = os.environ.get("RUN_DATE")
 
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 
 
-def export_flatten_ga4_to_gcs(
-    source_table_id: str,
-    gcs_uri: str,
-    bq_client: bigquery.Client,
-    query: str
-) -> None:
-    print(f"[EXPORT-FLATTEN] {source_table_id} -> {gcs_uri}")
+def ensure_tables(bq: bigquery.Client, project_id: str, dataset_silver: str) -> None:
+    # 1) ga4_events (flatten slim: 1 linha por evento)
+    bq.query(f"""
+    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.ga4_events` (
+      event_date_parsed DATE,
+      event_timestamp INT64,
+      event_name STRING,
+      user_pseudo_id STRING,
+      platform STRING,
+      stream_id STRING,
+      event_value_in_usd FLOAT64,
 
-    sql = f"""
-    EXPORT DATA OPTIONS(
-      uri='{gcs_uri}',
-      format='PARQUET',
-      overwrite=true
-    ) AS {query}
-    """
+      session_id INT64,
+      param_source STRING,
+      param_medium STRING,
+      param_campaign STRING,
 
-    job = bq_client.query(sql, location=BQ_LOCATION)
-    job.result()
+      user_id_param STRING,
+      user_company STRING,
+      user_plan STRING,
+      is_pro_user_flag STRING,
 
+      page_location STRING,
 
-def load_parquet_into_bq(
-    target_table_id: str,
-    gcs_uri: str,
-    bq_client: bigquery.Client,
-) -> None:
-    print(f"[LOAD] {gcs_uri} -> {target_table_id}")
+      geo_continent STRING,
+      geo_sub_continent STRING,
+      geo_country STRING,
+      geo_region STRING,
+      geo_city STRING,
+      geo_metro STRING,
 
-    job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.PARQUET,
-        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+      device_category STRING,
+      device_operating_system STRING,
+      device_operating_system_version STRING,
+      device_web_info_browser STRING,
+      device_browser STRING,
+      device_browser_version STRING,
+      device_language STRING,
+      device_mobile_brand_name STRING,
+      device_mobile_model_name STRING
     )
+    PARTITION BY event_date_parsed
+    CLUSTER BY event_name, user_pseudo_id;
+    """, location=BQ_LOCATION).result()
 
-    job = bq_client.load_table_from_uri(
-        gcs_uri,
-        target_table_id,
-        location=BQ_LOCATION,
-        job_config=job_config,
+    # 2) fEvents (fato, 1 linha por evento)
+    bq.query(f"""
+    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEvents` (
+      event_date_parsed DATE,
+      event_timestamp INT64,
+      event_ts_utc TIMESTAMP,
+
+      user_pseudo_id STRING,
+      platform STRING,
+      stream_id STRING,
+      event_name STRING,
+      event_value_in_usd FLOAT64,
+
+      session_id INT64,
+
+      traffic_sk INT64,
+      sk_geo INT64,
+      device_sk INT64,
+      event_sk INT64,
+      page_sk INT64,
+      fact_id INT64,
+
+      user_id STRING,
+      user_company STRING,
+      user_plan STRING,
+      is_pro_user_flag STRING,
+
+      traffic_source_source STRING,
+      traffic_source_medium STRING,
+      traffic_source_name STRING,
+
+      geo_continent STRING,
+      geo_sub_continent STRING,
+      geo_country STRING,
+      geo_region STRING,
+      geo_city STRING,
+      geo_metro STRING,
+
+      page_url_clean STRING,
+      hostname_calculado STRING
     )
+    PARTITION BY event_date_parsed
+    CLUSTER BY event_name, user_pseudo_id, session_id;
+    """, location=BQ_LOCATION).result()
+
+    # 3) agregadas particionadas
+    bq.query(f"""
+    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEventos_Agregada_Main` (
+      data_evento DATE,
+      event_sk INT64,
+      sk_geo INT64,
+      device_sk INT64,
+      traffic_sk INT64,
+      user_company STRING,
+      user_plan STRING,
+      is_pro_user_flag STRING,
+      total_eventos INT64,
+      usuarios_unicos_aprox INT64,
+      total_sessoes INT64
+    )
+    PARTITION BY data_evento
+    CLUSTER BY event_sk, traffic_sk, user_company;
+    """, location=BQ_LOCATION).result()
+
+    bq.query(f"""
+    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.fEventos_Agregada_Conteudo` (
+      data_evento DATE,
+      page_sk INT64,
+      traffic_sk INT64,
+      sk_geo INT64,
+      user_company STRING,
+      is_pro_user_flag STRING,
+      pageviews INT64,
+      leitores_unicos_aprox INT64
+    )
+    PARTITION BY data_evento
+    CLUSTER BY page_sk, traffic_sk;
+    """, location=BQ_LOCATION).result()
+
+    bq.query(f"""
+    CREATE TABLE IF NOT EXISTS `{project_id}.{dataset_silver}.dUser_Company` (
+      user_company STRING,
+      plano_atual STRING,
+      data_primeira_aparicao DATE,
+      data_ultima_aparicao DATE,
+      total_eventos_historicos INT64,
+      tier_cliente STRING,
+      segmento_mercado STRING,
+      account_manager STRING
+    );
+    """, location=BQ_LOCATION).result()
+
+
+def run_query(bq: bigquery.Client, sql: str) -> None:
+    job = bq.query(sql, location=BQ_LOCATION)
     job.result()
-
-
-def _gcs_uri_to_bucket_and_prefix(gcs_uri: str) -> tuple[str, str]:
-    """
-    Converte:
-      gs://bucket/path/to/files/*.parquet  -> (bucket, "path/to/files/")
-      gs://bucket/path/to/files/           -> (bucket, "path/to/files/")
-    """
-    if not gcs_uri.startswith("gs://"):
-        raise ValueError(f"gcs_uri inválida: {gcs_uri}")
-
-    no_scheme = gcs_uri[5:]  # remove gs://
-    bucket, _, path = no_scheme.partition("/")
-
-    # remove wildcard e garante prefixo "diretório"
-    path = path.replace("*", "")
-    if path and not path.endswith("/"):
-        path = path.rsplit("/", 1)[0] + "/"
-
-    return bucket, path
-
-
-def cleanup_gcs_parquet(gcs_uri: str, gcs_client: storage.Client) -> int:
-    """
-    Apaga objetos no bucket baseado no prefixo derivado do gcs_uri.
-    Retorna a quantidade de objetos deletados.
-    """
-    bucket_name, prefix = _gcs_uri_to_bucket_and_prefix(gcs_uri)
-
-    if not prefix:
-        raise ValueError(
-            f"Prefix vazio derivado de {gcs_uri}. "
-            "Para segurança, não vou deletar o bucket inteiro."
-        )
-
-    print(f"[CLEANUP] gs://{bucket_name}/{prefix} (deletando objetos do prefixo)")
-
-    bucket = gcs_client.bucket(bucket_name)
-    blobs = list(gcs_client.list_blobs(bucket, prefix=prefix))
-
-    if not blobs:
-        print("[CLEANUP] Nenhum objeto encontrado para deletar.")
-        return 0
-
-    # delete em lote
-    deleted = 0
-    for b in blobs:
-        # segurança: só apaga parquet (se quiser apagar tudo do prefixo, remova esse if)
-        if b.name.endswith(".parquet"):
-            bucket.blob(b.name).delete()
-            deleted += 1
-
-    print(f"[CLEANUP] Deletados {deleted} arquivos .parquet")
-    return deleted
-
-
-def run_stage(
-    *,
-    stage_name: str,
-    source_table_id: str,
-    target_table_id: str,
-    gcs_uri: str,
-    query_sql: str,
-    bq_client: bigquery.Client,
-    gcs_client: storage.Client,
-) -> None:
-    print(f"\n=== STAGE: {stage_name} ===")
-
-    export_flatten_ga4_to_gcs(source_table_id, gcs_uri, bq_client, query_sql)
-    load_parquet_into_bq(target_table_id, gcs_uri, bq_client)
-
-    # só limpa depois do load terminar com sucesso
-    cleanup_gcs_parquet(gcs_uri, gcs_client)
 
 
 def main():
@@ -144,83 +163,275 @@ def main():
         now_sp = datetime.datetime.now(TZ_SP)
         suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
 
-    bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-    gcs_client = storage.Client(project=PROJECT_ID)
+    day_date = f"PARSE_DATE('%Y%m%d', '{suffix}')"
 
-    # --- Valida source do dia (events_YYYYMMDD) ---
+    bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+
+    # valida tabela raw do dia
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
     try:
-        bq_client.get_table(source_events_day)
+        bq.get_table(source_events_day)
     except NotFound:
         print(f"Tabela não encontrada: {source_events_day}")
         return
 
-    # 1) GA4_EVENTS (carrega no dataset silver / tabela TARGET_TABLE)
-    target_ga4_events = f"{PROJECT_ID}.{DATASET_SILVER}.{TARGET_TABLE}"
-    gcs_uri_events = f"gs://{GCS_BUCKET}/ga4/silver/events/anomesdia={suffix}/*.parquet"
-    run_stage(
-        stage_name="GA4_EVENTS",
-        source_table_id=source_events_day,
-        target_table_id=target_ga4_events,
-        gcs_uri=gcs_uri_events,
-        query_sql=query_ga4_events(source_events_day),
-        bq_client=bq_client,
-        gcs_client=gcs_client,
-    )
+    ensure_tables(bq, PROJECT_ID, DATASET_SILVER)
 
-    # 2) fEvents
-    source_ga4_events_table = f"{PROJECT_ID}.{DATASET_SILVER}.ga4_events"
-    target_fevents = f"{PROJECT_ID}.{DATASET_SILVER}.fEvents"
-    gcs_uri_fevents = f"gs://{GCS_BUCKET}/ga4/silver/fevents/{suffix}/*.parquet"
-    run_stage(
-        stage_name="fEvents",
-        source_table_id=source_ga4_events_table,
-        target_table_id=target_fevents,
-        gcs_uri=gcs_uri_fevents,
-        query_sql=query_ga4_fevents(source_ga4_events_table),
-        bq_client=bq_client,
-        gcs_client=gcs_client,
-    )
+    # =========================
+    # 1) RAW -> ga4_events (somente o dia)
+    # =========================
+    run_query(bq, f"""
+    -- idempotência do dia
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.ga4_events`
+    WHERE event_date_parsed = {day_date};
 
-    # 3) fEventos_Agregada_Main
-    source_fevents = target_fevents
-    target_ag_main = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main"
-    gcs_uri_ag_main = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_main/{suffix}/*.parquet"
-    run_stage(
-        stage_name="fEventos_Agregada_Main",
-        source_table_id=source_fevents,
-        target_table_id=target_ag_main,
-        gcs_uri=gcs_uri_ag_main,
-        query_sql=query_ga4_fevents_agregada_main(source_fevents),
-        bq_client=bq_client,
-        gcs_client=gcs_client,
-    )
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.ga4_events`
+    SELECT
+      PARSE_DATE('%Y%m%d', e.event_date) AS event_date_parsed,
+      e.event_timestamp,
+      e.event_name,
+      e.user_pseudo_id,
+      e.platform,
+      e.stream_id,
+      SAFE_CAST(e.event_value_in_usd AS FLOAT64) AS event_value_in_usd,
 
-    # 4) fEventos_Agregada_Conteudo
-    target_ag_cont = f"{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo"
-    gcs_uri_ag_cont = f"gs://{GCS_BUCKET}/ga4/silver/feventos_agregada_conteudo/{suffix}/*.parquet"
-    run_stage(
-        stage_name="fEventos_Agregada_Conteudo",
-        source_table_id=source_fevents,
-        target_table_id=target_ag_cont,
-        gcs_uri=gcs_uri_ag_cont,
-        query_sql=query_ga4_fevents_agregada_conteudo(source_fevents),
-        bq_client=bq_client,
-        gcs_client=gcs_client,
-    )
+      -- session + traffic params (sem explodir em linhas)
+      (SELECT COALESCE(ep.value.int_value, SAFE_CAST(ep.value.string_value AS INT64))
+       FROM UNNEST(e.event_params) ep
+       WHERE ep.key = 'ga_session_id'
+       LIMIT 1) AS session_id,
 
-    # 5) dUser_Company
-    target_duser = f"{PROJECT_ID}.{DATASET_SILVER}.dUser_Company"
-    gcs_uri_duser = f"gs://{GCS_BUCKET}/ga4/silver/duser_company/{suffix}/*.parquet"
-    run_stage(
-        stage_name="dUser_Company",
-        source_table_id=source_fevents,
-        target_table_id=target_duser,
-        gcs_uri=gcs_uri_duser,
-        query_sql=query_ga4_duser_company(source_fevents),
-        bq_client=bq_client,
-        gcs_client=gcs_client,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='source'   LIMIT 1) AS param_source,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='medium'   LIMIT 1) AS param_medium,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='campaign' LIMIT 1) AS param_campaign,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_USERID' LIMIT 1) AS user_id_param,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_COMPANY' LIMIT 1) AS user_company,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_Planos'  LIMIT 1) AS user_plan,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_isPro'  LIMIT 1) AS is_pro_user_flag,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='page_location' LIMIT 1) AS page_location,
+
+      e.geo.continent AS geo_continent,
+      e.geo.sub_continent AS geo_sub_continent,
+      e.geo.country AS geo_country,
+      e.geo.region AS geo_region,
+      e.geo.city AS geo_city,
+      e.geo.metro AS geo_metro,
+
+      e.device.category AS device_category,
+      e.device.operating_system AS device_operating_system,
+      e.device.operating_system_version AS device_operating_system_version,
+      e.device.web_info.browser AS device_web_info_browser,
+      e.device.browser AS device_browser,
+      e.device.browser_version AS device_browser_version,
+      e.device.language AS device_language,
+      e.device.mobile_brand_name AS device_mobile_brand_name,
+      e.device.mobile_model_name AS device_mobile_model_name
+    FROM `{source_events_day}` e
+    WHERE PARSE_DATE('%Y%m%d', e.event_date) = {day_date};
+    """)
+
+    # =========================
+    # 2) ga4_events -> fEvents (somente o dia)
+    # =========================
+    run_query(bq, f"""
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+    WHERE event_date_parsed = {day_date};
+
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+    WITH base AS (
+      SELECT
+        g.*,
+
+        -- fill-down por sessão (barato porque é só o dia)
+        LAST_VALUE(param_source IGNORE NULLS) OVER(
+          PARTITION BY user_pseudo_id, session_id
+          ORDER BY event_timestamp
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS source_final,
+
+        LAST_VALUE(param_medium IGNORE NULLS) OVER(
+          PARTITION BY user_pseudo_id, session_id
+          ORDER BY event_timestamp
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS medium_final,
+
+        LAST_VALUE(param_campaign IGNORE NULLS) OVER(
+          PARTITION BY user_pseudo_id, session_id
+          ORDER BY event_timestamp
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS campaign_final
+
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.ga4_events` g
+      WHERE event_date_parsed = {day_date}
     )
+    SELECT
+      event_date_parsed,
+      event_timestamp,
+      TIMESTAMP_MICROS(event_timestamp) AS event_ts_utc,
+
+      user_pseudo_id,
+      platform,
+      stream_id,
+      event_name,
+      event_value_in_usd,
+
+      session_id,
+
+      ABS(FARM_FINGERPRINT(CONCAT(
+        COALESCE(source_final, '(direct)'), '|',
+        COALESCE(medium_final, '(none)'), '|',
+        COALESCE(campaign_final, '(not set)')
+      ))) AS traffic_sk,
+
+      ABS(FARM_FINGERPRINT(CONCAT(
+        COALESCE(geo_continent, 'N/A'), '|',
+        COALESCE(geo_sub_continent, 'N/A'), '|',
+        COALESCE(geo_country, 'N/A'), '|',
+        COALESCE(geo_region, 'N/A'), '|',
+        COALESCE(geo_city, 'N/A'), '|',
+        COALESCE(geo_metro, 'N/A')
+      ))) AS sk_geo,
+
+      ABS(FARM_FINGERPRINT(CONCAT(
+        COALESCE(device_category, 'N/A'), '|',
+        COALESCE(device_operating_system, 'N/A'), '|',
+        COALESCE(device_operating_system_version, 'N/A'), '|',
+        COALESCE(device_web_info_browser, 'N/A'), '|',
+        COALESCE(device_browser, 'N/A'), '|',
+        COALESCE(device_browser_version, 'N/A'), '|',
+        COALESCE(device_language, 'N/A'), '|',
+        COALESCE(device_mobile_brand_name, 'N/A'), '|',
+        COALESCE(device_mobile_model_name, 'N/A')
+      ))) AS device_sk,
+
+      ABS(FARM_FINGERPRINT(COALESCE(event_name, 'Unknown'))) AS event_sk,
+
+      ABS(FARM_FINGERPRINT(CONCAT(
+        COALESCE(REGEXP_EXTRACT(page_location, r'^https?://([^/]+)'), 'N/A'), '|',
+        COALESCE(SPLIT(page_location, '?')[SAFE_OFFSET(0)], 'N/A'), '|',
+        COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
+      ))) AS page_sk,
+
+      ABS(FARM_FINGERPRINT(CONCAT(user_pseudo_id, CAST(event_timestamp AS STRING), event_name))) AS fact_id,
+
+      -- user_id: tenta “preencher” por user_pseudo_id no dia
+      COALESCE(
+        MAX(user_id_param) OVER(PARTITION BY user_pseudo_id),
+        user_id_param
+      ) AS user_id,
+
+      user_company,
+      user_plan,
+      is_pro_user_flag,
+
+      source_final AS traffic_source_source,
+      medium_final AS traffic_source_medium,
+      campaign_final AS traffic_source_name,
+
+      geo_continent, geo_sub_continent, geo_country, geo_region, geo_city, geo_metro,
+
+      SPLIT(page_location, '?')[SAFE_OFFSET(0)] AS page_url_clean,
+      REGEXP_EXTRACT(page_location, r'^https?://([^/]+)') AS hostname_calculado
+    FROM base;
+    """)
+
+    # =========================
+    # 3) fEvents -> Agregada Main (somente o dia)
+    # =========================
+    run_query(bq, f"""
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main`
+    WHERE data_evento = {day_date};
+
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Main`
+    SELECT
+      event_date_parsed AS data_evento,
+      event_sk,
+      sk_geo,
+      device_sk,
+      traffic_sk,
+      user_company,
+      user_plan,
+      is_pro_user_flag,
+      COUNT(*) AS total_eventos,
+      COUNT(DISTINCT user_pseudo_id) AS usuarios_unicos_aprox,
+      SUM(CASE WHEN event_name = 'session_start' THEN 1 ELSE 0 END) AS total_sessoes
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+    WHERE event_date_parsed = {day_date}
+    GROUP BY 1,2,3,4,5,6,7,8;
+    """)
+
+    # =========================
+    # 4) fEvents -> Agregada Conteudo (somente o dia)
+    # =========================
+    run_query(bq, f"""
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo`
+    WHERE data_evento = {day_date};
+
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.fEventos_Agregada_Conteudo`
+    WITH user_attrs AS (
+      SELECT
+        user_pseudo_id,
+        event_date_parsed,
+        MAX(user_company) AS empresa_encontrada,
+        MAX(is_pro_user_flag) AS status_pro_encontrado
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+      WHERE event_date_parsed = {day_date}
+        AND (user_company IS NOT NULL OR is_pro_user_flag IS NOT NULL)
+      GROUP BY 1,2
+    )
+    SELECT
+      t1.event_date_parsed AS data_evento,
+      t1.page_sk,
+      t1.traffic_sk,
+      t1.sk_geo,
+      COALESCE(t2.empresa_encontrada, t1.user_company, 'N/A') AS user_company,
+      COALESCE(t2.status_pro_encontrado, t1.is_pro_user_flag, 'false') AS is_pro_user_flag,
+      COUNT(*) AS pageviews,
+      COUNT(DISTINCT t1.user_pseudo_id) AS leitores_unicos_aprox
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents` t1
+    LEFT JOIN user_attrs t2
+      ON t1.user_pseudo_id = t2.user_pseudo_id
+     AND t1.event_date_parsed = t2.event_date_parsed
+    WHERE t1.event_date_parsed = {day_date}
+      AND t1.event_name = 'page_view'
+    GROUP BY 1,2,3,4,5,6;
+    """)
+
+    # =========================
+    # 5) dUser_Company (barato: incremental MERGE)
+    # =========================
+    run_query(bq, f"""
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.dUser_Company` T
+    USING (
+      SELECT
+        user_company,
+        ARRAY_AGG(user_plan ORDER BY event_date_parsed DESC LIMIT 1)[OFFSET(0)] AS plano_atual,
+        MIN(event_date_parsed) AS data_primeira_aparicao,
+        MAX(event_date_parsed) AS data_ultima_aparicao,
+        COUNT(*) AS total_eventos_historicos
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.fEvents`
+      WHERE event_date_parsed = {day_date}
+        AND user_company IS NOT NULL
+      GROUP BY 1
+    ) S
+    ON T.user_company = S.user_company
+    WHEN MATCHED THEN UPDATE SET
+      T.plano_atual = COALESCE(S.plano_atual, T.plano_atual),
+      T.data_primeira_aparicao = LEAST(T.data_primeira_aparicao, S.data_primeira_aparicao),
+      T.data_ultima_aparicao = GREATEST(T.data_ultima_aparicao, S.data_ultima_aparicao),
+      T.total_eventos_historicos = T.total_eventos_historicos + S.total_eventos_historicos
+    WHEN NOT MATCHED THEN INSERT (
+      user_company, plano_atual, data_primeira_aparicao, data_ultima_aparicao, total_eventos_historicos,
+      tier_cliente, segmento_mercado, account_manager
+    ) VALUES (
+      S.user_company, S.plano_atual, S.data_primeira_aparicao, S.data_ultima_aparicao, S.total_eventos_historicos,
+      NULL, NULL, NULL
+    );
+    """)
+
+    print(f"✅ Pipeline concluído para {suffix}.")
 
 
 if __name__ == "__main__":
