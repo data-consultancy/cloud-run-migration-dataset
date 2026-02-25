@@ -1,7 +1,8 @@
 import os
 import datetime
 from zoneinfo import ZoneInfo
-from google.cloud import bigquery, storage
+from google.cloud import bigquery
+from google.cloud import storage
 from google.api_core.exceptions import NotFound
 
 from utils.query_ga4_events import query_ga4_events
