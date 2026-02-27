@@ -61,7 +61,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       device_browser_version STRING,
       device_language STRING,
       device_mobile_brand_name STRING,
-      device_mobile_model_name STRING
+      device_mobile_model_name STRING,
       page_title STRING
     )
     PARTITION BY event_date_parsed
