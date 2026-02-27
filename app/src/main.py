@@ -62,6 +62,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       device_language STRING,
       device_mobile_brand_name STRING,
       device_mobile_model_name STRING
+      page_title STRING
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id;
@@ -192,6 +193,8 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
       (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_isPro'  LIMIT 1) AS is_pro_user_flag,
 
       (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='page_location' LIMIT 1) AS page_location,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='page_title'    LIMIT 1) AS page_title,
+
 
       e.geo.continent AS geo_continent,
       e.geo.sub_continent AS geo_sub_continent,
