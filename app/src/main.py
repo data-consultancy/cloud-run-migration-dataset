@@ -35,6 +35,11 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       event_value_in_usd FLOAT64,
 
       session_id INT64,
+      ga_session_number INT64,
+      session_engaged STRING,
+      engagement_time_msec INT64,
+      is_active_user BOOL,
+
       param_source STRING,
       param_medium STRING,
       param_campaign STRING,
@@ -45,6 +50,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       is_pro_user_flag STRING,
 
       page_location STRING,
+      page_title STRING,
 
       geo_continent STRING,
       geo_sub_continent STRING,
@@ -61,8 +67,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       device_browser_version STRING,
       device_language STRING,
       device_mobile_brand_name STRING,
-      device_mobile_model_name STRING,
-      page_title STRING
+      device_mobile_model_name STRING
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id;
@@ -168,7 +173,44 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
     WHERE event_date_parsed = {day_date_expr};
 
-    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}` (
+      event_date_parsed,
+      event_timestamp,
+      event_name,
+      user_pseudo_id,
+      platform,
+      stream_id,
+      event_value_in_usd,
+      session_id,
+      ga_session_number,
+      session_engaged,
+      engagement_time_msec,
+      is_active_user,
+      param_source,
+      param_medium,
+      param_campaign,
+      user_id_param,
+      user_company,
+      user_plan,
+      is_pro_user_flag,
+      page_location,
+      geo_continent,
+      geo_sub_continent,
+      geo_country,
+      geo_region,
+      geo_city,
+      geo_metro,
+      device_category,
+      device_operating_system,
+      device_operating_system_version,
+      device_web_info_browser,
+      device_browser,
+      device_browser_version,
+      device_language,
+      device_mobile_brand_name,
+      device_mobile_model_name,
+      page_title
+    )
     SELECT
       PARSE_DATE('%Y%m%d', e.event_date) AS event_date_parsed,
       e.event_timestamp,
@@ -179,22 +221,40 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
       SAFE_CAST(e.event_value_in_usd AS FLOAT64) AS event_value_in_usd,
 
       (SELECT COALESCE(ep.value.int_value, SAFE_CAST(ep.value.string_value AS INT64))
-       FROM UNNEST(e.event_params) ep
-       WHERE ep.key = 'ga_session_id'
-       LIMIT 1) AS session_id,
+      FROM UNNEST(e.event_params) ep
+      WHERE ep.key = 'ga_session_id'
+      LIMIT 1) AS session_id,
 
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='source'   LIMIT 1) AS param_source,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='medium'   LIMIT 1) AS param_medium,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='campaign' LIMIT 1) AS param_campaign,
+      (SELECT COALESCE(ep.value.int_value, SAFE_CAST(ep.value.string_value AS INT64))
+      FROM UNNEST(e.event_params) ep
+      WHERE ep.key = 'ga_session_number'
+      LIMIT 1) AS ga_session_number,
 
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_USERID' LIMIT 1) AS user_id_param,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_COMPANY' LIMIT 1) AS user_company,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_Planos'  LIMIT 1) AS user_plan,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='JOTA_isPro'  LIMIT 1) AS is_pro_user_flag,
+      (SELECT COALESCE(
+                ep.value.string_value,
+                CAST(ep.value.int_value AS STRING)
+              )
+      FROM UNNEST(e.event_params) ep
+      WHERE ep.key = 'session_engaged'
+      LIMIT 1) AS session_engaged,
 
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='page_location' LIMIT 1) AS page_location,
-      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key='page_title'    LIMIT 1) AS page_title,
+      (SELECT COALESCE(ep.value.int_value, SAFE_CAST(ep.value.string_value AS INT64))
+      FROM UNNEST(e.event_params) ep
+      WHERE ep.key = 'engagement_time_msec'
+      LIMIT 1) AS engagement_time_msec,
 
+      e.is_active_user AS is_active_user,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'source' LIMIT 1) AS param_source,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'medium' LIMIT 1) AS param_medium,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'campaign' LIMIT 1) AS param_campaign,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'JOTA_USERID' LIMIT 1) AS user_id_param,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'JOTA_COMPANY' LIMIT 1) AS user_company,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'JOTA_Planos' LIMIT 1) AS user_plan,
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'JOTA_isPro' LIMIT 1) AS is_pro_user_flag,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'page_location' LIMIT 1) AS page_location,
 
       e.geo.continent AS geo_continent,
       e.geo.sub_continent AS geo_sub_continent,
@@ -211,7 +271,9 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
       e.device.browser_version AS device_browser_version,
       e.device.language AS device_language,
       e.device.mobile_brand_name AS device_mobile_brand_name,
-      e.device.mobile_model_name AS device_mobile_model_name
+      e.device.mobile_model_name AS device_mobile_model_name,
+
+      (SELECT ep.value.string_value FROM UNNEST(e.event_params) ep WHERE ep.key = 'page_title' LIMIT 1) AS page_title
     FROM `{source_events_day}` e
     WHERE PARSE_DATE('%Y%m%d', e.event_date) = {day_date_expr};
     """)
