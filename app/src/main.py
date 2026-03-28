@@ -3,11 +3,15 @@ import datetime
 from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
+from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension
+
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
 DATASET_RAW = os.environ.get("DATASET_RAW")
 DATASET_SILVER = os.environ.get("DATASET_SILVER")
 RUN_DATE = os.environ.get("RUN_DATE")
+GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
 
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
@@ -17,10 +21,39 @@ T_FEVENTS_V2 = "fEvents_v2"
 T_AG_MAIN_V2 = "fEventos_Agregada_Main_v2"
 T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
 T_DUSER_V2 = "dUser_Company_v2"
+T_USERS_ACTIVE = "usuarios_ativos_v2"
 
 
 def run_query(bq: bigquery.Client, sql: str) -> None:
     bq.query(sql, location=BQ_LOCATION).result()
+
+
+def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
+    """
+    Retorna usuários ativos por dia via GA4 Data API.
+    """
+    client = BetaAnalyticsDataClient()
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="date")],
+        metrics=[Metric(name="activeUsers")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        limit=100000,
+    )
+
+    response = client.run_report(request)
+
+    result = []
+    for row in response.rows:
+        raw_date = row.dimension_values[0].value 
+        formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        result.append({
+            "data": formatted_date,
+            "usuarios_ativos": int(row.metric_values[0].value),
+        })
+
+    return result
 
 
 def ensure_tables_v2(bq: bigquery.Client) -> None:
@@ -162,6 +195,44 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       account_manager STRING
     );
     """)
+
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` (
+      data DATE,
+      usuarios_ativos INT64
+    )
+    PARTITION BY data;
+    """)
+
+
+def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
+    """
+    Busca usuários ativos via GA4 API e grava no BigQuery.
+    """
+    if not GA4_PROPERTY_ID:
+        raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
+
+    start_date = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+    end_date = start_date
+
+    rows = get_active_users_per_day(
+        property_id=GA4_PROPERTY_ID,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    run_query(bq, f"""
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}`
+    WHERE data = DATE('{start_date}');
+    """)
+
+    if rows:
+        errors = bq.insert_rows_json(
+            f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}",
+            rows
+        )
+        if errors:
+            raise RuntimeError(f"Erro ao inserir usuários ativos no BigQuery: {errors}")
 
 
 def process_day(bq: bigquery.Client, suffix: str) -> None:
@@ -452,6 +523,9 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     );
     """)
 
+    # 6) usuários ativos via API
+    upsert_active_users_api(bq, suffix)
+
 
 def main():
     if RUN_DATE:
@@ -460,19 +534,45 @@ def main():
         now_sp = datetime.datetime.now(TZ_SP)
         suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
 
+    day_ref = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
     bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
 
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
+
+    print("=" * 100)
+    print("Inicio do processamento GA4")
+    print(f"Data de referencia: {day_ref}")
+    print(f"Projeto: {PROJECT_ID}")
+    print(f"Dataset RAW: {DATASET_RAW}")
+    print(f"Dataset SILVER: {DATASET_SILVER}")
+    print(f"Tabela de origem: {source_events_day}")
+    print("=" * 100)
+
     try:
         bq.get_table(source_events_day)
+        print(f"Tabela de origem encontrada: {source_events_day}")
     except NotFound:
-        print(f"Tabela não encontrada: {source_events_day}")
+        print(f"Tabela de origem nao encontrada: {source_events_day}")
         return
 
+    print("Garantindo existencia das tabelas de destino...")
     ensure_tables_v2(bq)
-    process_day(bq, suffix)
+    print("Tabelas validadas/criadas com sucesso")
 
-    print(f"✅ OK: processamento do dia {suffix} concluído.")
+    print("Iniciando processamento do dia...")
+    process_day(bq, suffix)
+    print("Processamento principal concluido")
+
+    print("Processamento finalizado com sucesso")
+    print(f"Data processada: {day_ref}")
+    print(f"Origem: {source_events_day}")
+    print("Tabelas de destino:")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}")
 
 
 if __name__ == "__main__":
