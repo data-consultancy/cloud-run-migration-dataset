@@ -22,6 +22,7 @@ T_AG_MAIN_V2 = "fEventos_Agregada_Main_v2"
 T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
 T_DUSER_V2 = "dUser_Company_v2"
 T_USERS_ACTIVE = "usuarios_ativos_v2"
+T_USERS_BY_PAGE = "usuarios_paginas_v2"
 
 
 def run_query(bq: bigquery.Client, sql: str) -> None:
@@ -46,12 +47,66 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
 
     result = []
     for row in response.rows:
-        raw_date = row.dimension_values[0].value 
+        raw_date = row.dimension_values[0].value
         formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
         result.append({
             "data": formatted_date,
             "usuarios_ativos": int(row.metric_values[0].value),
         })
+
+    return result
+
+
+def get_total_users_per_page(property_id: str, start_date: str, end_date: str):
+    """
+    Retorna total de usuários por página via GA4 Data API.
+    Pagina resultados para evitar truncamento.
+    """
+    client = BetaAnalyticsDataClient()
+    limit = 100000
+    offset = 0
+    result = []
+
+    while True:
+        request = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=[
+                Dimension(name="date"),
+                Dimension(name="pagePath"),
+                Dimension(name="pageTitle"),
+            ],
+            metrics=[Metric(name="totalUsers")],
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            limit=limit,
+            offset=offset,
+        )
+
+        response = client.run_report(request)
+
+        if not response.rows:
+            break
+
+        for row in response.rows:
+            raw_date = row.dimension_values[0].value
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+
+            print(row.dimension_values)
+
+            page_path = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
+            page_title = row.dimension_values[2].value if len(row.dimension_values) > 2 else None
+            total_usuarios = int(row.metric_values[0].value)
+
+            result.append({
+                "data": formatted_date,
+                "page_path": page_path or None,
+                "page_title": page_title or None,
+                "total_usuarios": total_usuarios,
+            })
+
+        if len(response.rows) < limit:
+            break
+
+        offset += limit
 
     return result
 
@@ -204,6 +259,17 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     PARTITION BY data;
     """)
 
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` (
+      data DATE,
+      page_path STRING,
+      page_title STRING,
+      total_usuarios INT64
+    )
+    PARTITION BY data
+    CLUSTER BY page_path;
+    """)
+
 
 def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
     """
@@ -233,6 +299,36 @@ def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
         )
         if errors:
             raise RuntimeError(f"Erro ao inserir usuários ativos no BigQuery: {errors}")
+
+
+def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
+    """
+    Busca total de usuários por página via GA4 API e grava no BigQuery.
+    """
+    if not GA4_PROPERTY_ID:
+        raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
+
+    start_date = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+    end_date = start_date
+
+    rows = get_total_users_per_page(
+        property_id=GA4_PROPERTY_ID,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    run_query(bq, f"""
+    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}`
+    WHERE data = DATE('{start_date}');
+    """)
+
+    if rows:
+        errors = bq.insert_rows_json(
+            f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}",
+            rows
+        )
+        if errors:
+            raise RuntimeError(f"Erro ao inserir usuários por página no BigQuery: {errors}")
 
 
 def process_day(bq: bigquery.Client, suffix: str) -> None:
@@ -526,6 +622,9 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     # 6) usuários ativos via API
     upsert_active_users_api(bq, suffix)
 
+    # 7) total de usuários por página via API
+    upsert_total_users_by_page_api(bq, suffix)
+
 
 def main():
     if RUN_DATE:
@@ -573,6 +672,7 @@ def main():
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}")
 
 
 if __name__ == "__main__":
