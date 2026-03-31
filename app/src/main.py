@@ -57,10 +57,10 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
     return result
 
 
-def get_total_users_per_page(property_id: str, start_date: str, end_date: str):
+def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
     """
-    Retorna total de usuários por página via GA4 Data API.
-    Pagina resultados para evitar truncamento.
+    Retorna usuários ativos por página via GA4 Data API,
+    no mesmo conceito do relatório Pages and screens.
     """
     client = BetaAnalyticsDataClient()
     limit = 100000
@@ -73,9 +73,8 @@ def get_total_users_per_page(property_id: str, start_date: str, end_date: str):
             dimensions=[
                 Dimension(name="date"),
                 Dimension(name="pagePath"),
-                Dimension(name="pageTitle"),
             ],
-            metrics=[Metric(name="totalUsers")],
+            metrics=[Metric(name="activeUsers")],
             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
             limit=limit,
             offset=offset,
@@ -90,17 +89,13 @@ def get_total_users_per_page(property_id: str, start_date: str, end_date: str):
             raw_date = row.dimension_values[0].value
             formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
 
-            print(row.dimension_values)
-
             page_path = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
-            page_title = row.dimension_values[2].value if len(row.dimension_values) > 2 else None
-            total_usuarios = int(row.metric_values[0].value)
+            usuarios_ativos = int(row.metric_values[0].value)
 
             result.append({
                 "data": formatted_date,
                 "page_path": page_path or None,
-                "page_title": page_title or None,
-                "total_usuarios": total_usuarios,
+                "usuarios_ativos": usuarios_ativos,
             })
 
         if len(response.rows) < limit:
@@ -263,8 +258,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` (
       data DATE,
       page_path STRING,
-      page_title STRING,
-      total_usuarios INT64
+      usuarios_ativos INT64
     )
     PARTITION BY data
     CLUSTER BY page_path;
