@@ -23,6 +23,8 @@ T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
 T_DUSER_V2 = "dUser_Company_v2"
 T_USERS_ACTIVE = "usuarios_ativos_v2"
 T_USERS_BY_PAGE = "usuarios_paginas_v2"
+T_STG_USERS_ACTIVE = "_stg_usuarios_ativos_v2"
+T_STG_USERS_BY_PAGE = "_stg_usuarios_paginas_v2"
 
 
 def run_query(bq: bigquery.Client, sql: str) -> None:
@@ -47,7 +49,7 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
 
     result = []
     for row in response.rows:
-        raw_date = row.dimension_values[0].value
+        raw_date = row.dimension_values[0].value 
         formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
         result.append({
             "data": formatted_date,
@@ -265,9 +267,28 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     """)
 
 
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}` (
+      data DATE,
+      usuarios_ativos INT64
+    )
+    PARTITION BY data;
+    """)
+
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}` (
+      data DATE,
+      page_path STRING,
+      usuarios_ativos INT64
+    )
+    PARTITION BY data
+    CLUSTER BY page_path;
+    """)
+
+
 def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
     """
-    Busca usuários ativos via GA4 API e grava no BigQuery.
+    Busca usuários ativos via GA4 API e grava no BigQuery via staging + MERGE.
     """
     if not GA4_PROPERTY_ID:
         raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
@@ -281,23 +302,92 @@ def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
         end_date=end_date,
     )
 
+    if not rows:
+        print(f"Nenhum registro de usuários ativos retornado pela API para {start_date}")
+        return
+
+    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}"
+
     run_query(bq, f"""
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}`
+    DELETE FROM `{staging_table}`
     WHERE data = DATE('{start_date}');
     """)
 
-    if rows:
-        errors = bq.insert_rows_json(
-            f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}",
-            rows
-        )
-        if errors:
-            raise RuntimeError(f"Erro ao inserir usuários ativos no BigQuery: {errors}")
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND"
+    )
+
+    load_job = bq.load_table_from_json(
+        rows,
+        staging_table,
+        job_config=job_config,
+        location=BQ_LOCATION,
+    )
+    load_job.result()
+
+    run_query(bq, f"""
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
+    USING (
+      SELECT
+        data,
+        usuarios_ativos
+      FROM `{staging_table}`
+      WHERE data = DATE('{start_date}')
+    ) S
+    ON T.data = S.data
+    WHEN MATCHED THEN
+      UPDATE SET
+        T.usuarios_ativos = S.usuarios_ativos
+    WHEN NOT MATCHED THEN
+      INSERT (data, usuarios_ativos)
+      VALUES (S.data, S.usuarios_ativos);
+    """)
+
+    if not rows:
+        print(f"Nenhum registro de usuários ativos retornado pela API para {start_date}")
+        return
+
+    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}"
+
+    run_query(bq, f"""
+    DELETE FROM `{staging_table}`
+    WHERE data = DATE('{start_date}');
+    """)
+
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND"
+    )
+
+    load_job = bq.load_table_from_json(
+        rows,
+        staging_table,
+        job_config=job_config,
+        location=BQ_LOCATION,
+    )
+    load_job.result()
+
+    run_query(bq, f"""
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
+    USING (
+      SELECT
+        data,
+        usuarios_ativos
+      FROM `{staging_table}`
+      WHERE data = DATE('{start_date}')
+    ) S
+    ON T.data = S.data
+    WHEN MATCHED THEN
+      UPDATE SET
+        T.usuarios_ativos = S.usuarios_ativos
+    WHEN NOT MATCHED THEN
+      INSERT (data, usuarios_ativos)
+      VALUES (S.data, S.usuarios_ativos);
+    """)
 
 
 def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     """
-    Busca total de usuários por página via GA4 API e grava no BigQuery.
+    Busca usuários ativos por página via GA4 API e grava no BigQuery via staging + MERGE.
     """
     if not GA4_PROPERTY_ID:
         raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
@@ -311,20 +401,48 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
         end_date=end_date,
     )
 
+    if not rows:
+        print(f"Nenhum registro de usuários por página retornado pela API para {start_date}")
+        return
+
+    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}"
+
     run_query(bq, f"""
-    DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}`
+    DELETE FROM `{staging_table}`
     WHERE data = DATE('{start_date}');
     """)
 
-    if rows:
-        errors = bq.insert_rows_json(
-            f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}",
-            rows
-        )
-        if errors:
-            raise RuntimeError(f"Erro ao inserir usuários por página no BigQuery: {errors}")
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND"
+    )
 
+    load_job = bq.load_table_from_json(
+        rows,
+        staging_table,
+        job_config=job_config,
+        location=BQ_LOCATION,
+    )
+    load_job.result()
 
+    run_query(bq, f"""
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` T
+    USING (
+      SELECT
+        data,
+        page_path,
+        usuarios_ativos
+      FROM `{staging_table}`
+      WHERE data = DATE('{start_date}')
+    ) S
+    ON T.data = S.data
+       AND T.page_path = S.page_path
+    WHEN MATCHED THEN
+      UPDATE SET
+        T.usuarios_ativos = S.usuarios_ativos
+    WHEN NOT MATCHED THEN
+      INSERT (data, page_path, usuarios_ativos)
+      VALUES (S.data, S.page_path, S.usuarios_ativos);
+    """)
 def process_day(bq: bigquery.Client, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
