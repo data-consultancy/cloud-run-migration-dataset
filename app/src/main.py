@@ -305,7 +305,7 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     start_date = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
     end_date = start_date
 
-    rows = get_total_users_per_page(
+    rows = get_active_users_per_page(
         property_id=GA4_PROPERTY_ID,
         start_date=start_date,
         end_date=end_date,
