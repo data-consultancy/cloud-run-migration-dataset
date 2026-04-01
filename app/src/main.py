@@ -62,7 +62,7 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
 def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
     """
     Retorna usuários ativos por página via GA4 Data API,
-    no mesmo conceito do relatório Pages and screens.
+    salvando a URL completa (protocolo + host + path + query string).
     """
     client = BetaAnalyticsDataClient()
     limit = 100000
@@ -74,7 +74,7 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             property=f"properties/{property_id}",
             dimensions=[
                 Dimension(name="date"),
-                Dimension(name="pagePath"),
+                Dimension(name="pageLocation"),
             ],
             metrics=[Metric(name="activeUsers")],
             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
@@ -91,12 +91,12 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             raw_date = row.dimension_values[0].value
             formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
 
-            page_path = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
+            page_location = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
             usuarios_ativos = int(row.metric_values[0].value)
 
             result.append({
                 "data": formatted_date,
-                "page_path": page_path or None,
+                "page_location": page_location or None,
                 "usuarios_ativos": usuarios_ativos,
             })
 
@@ -259,11 +259,11 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` (
       data DATE,
-      page_path STRING,
+      page_location STRING,
       usuarios_ativos INT64
     )
     PARTITION BY data
-    CLUSTER BY page_path;
+    CLUSTER BY page_location;
     """)
 
 
@@ -278,11 +278,11 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}` (
       data DATE,
-      page_path STRING,
+      page_location STRING,
       usuarios_ativos INT64
     )
     PARTITION BY data
-    CLUSTER BY page_path;
+    CLUSTER BY page_location;
     """)
 
 
@@ -429,20 +429,22 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     USING (
       SELECT
         data,
-        page_path,
+        page_location,
         usuarios_ativos
       FROM `{staging_table}`
       WHERE data = DATE('{start_date}')
     ) S
     ON T.data = S.data
-       AND T.page_path = S.page_path
+      AND T.page_location = S.page_location
     WHEN MATCHED THEN
       UPDATE SET
         T.usuarios_ativos = S.usuarios_ativos
     WHEN NOT MATCHED THEN
-      INSERT (data, page_path, usuarios_ativos)
-      VALUES (S.data, S.page_path, S.usuarios_ativos);
+      INSERT (data, page_location, usuarios_ativos)
+      VALUES (S.data, S.page_location, S.usuarios_ativos);
     """)
+
+    
 def process_day(bq: bigquery.Client, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
