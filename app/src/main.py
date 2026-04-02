@@ -41,7 +41,7 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
         property=f"properties/{property_id}",
         dimensions=[Dimension(name="date")],
         metrics=[Metric(name="activeUsers")],
-        date_ranges=[DateRange(start_date='2026-03-15', end_date='2026-03-31')],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
         limit=100000,
     )
 
@@ -77,7 +77,7 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
                 Dimension(name="pageLocation"),
             ],
             metrics=[Metric(name="activeUsers")],
-            date_ranges=[DateRange(start_date='2026-03-15', end_date='2026-03-31')],
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
             limit=limit,
             offset=offset,
         )
@@ -444,7 +444,7 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
       VALUES (S.data, S.page_location, S.usuarios_ativos);
     """)
 
-
+    
 def process_day(bq: bigquery.Client, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
