@@ -41,7 +41,7 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
         property=f"properties/{property_id}",
         dimensions=[Dimension(name="date")],
         metrics=[Metric(name="activeUsers")],
-        date_ranges=[DateRange(start_date='2026-01-01', end_date='2026-03-27')],
+        date_ranges=[DateRange(start_date='2026-03-01', end_date='2026-03-31')],
         limit=100000,
     )
 
@@ -77,7 +77,7 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
                 Dimension(name="pageLocation"),
             ],
             metrics=[Metric(name="activeUsers")],
-            date_ranges=[DateRange(start_date='2026-01-01', end_date='2026-03-27')],
+            date_ranges=[DateRange(start_date='2026-03-01', end_date='2026-03-31')],
             limit=limit,
             offset=offset,
         )
