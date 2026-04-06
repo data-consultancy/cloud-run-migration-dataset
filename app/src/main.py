@@ -118,8 +118,8 @@ def get_active_users_per_page(property_id: str):
     Reprocessa os últimos N dias de usuários ativos por página via GA4 Data API.
     """
 
-    end_date = datetime.utcnow().date() - timedelta(days=1)
-    start_date = end_date - timedelta(days=days_to_reprocess - 1)
+    end_date = datetime.datetime.utcnow().date() - datetime.timedelta(days=1)
+    start_date = end_date - datetime.timedelta(days=days_to_reprocess - 1)
 
     client = BetaAnalyticsDataClient()
     limit = 100000
