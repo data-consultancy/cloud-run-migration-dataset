@@ -111,7 +111,6 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
 
 #     return result
 
-from datetime import datetime, timedelta
 
 def get_active_users_per_page(property_id: str):
     """
