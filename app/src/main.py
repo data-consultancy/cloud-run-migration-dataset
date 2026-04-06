@@ -118,7 +118,7 @@ def get_active_users_per_page(property_id: str):
     """
 
     end_date = datetime.datetime.utcnow().date() - datetime.timedelta(days=1)
-    start_date = end_date - datetime.timedelta(days=days_to_reprocess - 1)
+    start_date = end_date - datetime.timedelta(days=int(days_to_reprocess) - 1)
 
     client = BetaAnalyticsDataClient()
     limit = 100000
