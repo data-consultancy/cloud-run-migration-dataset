@@ -75,7 +75,7 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             property=f"properties/{property_id}",
             dimensions=[
                 Dimension(name="date"),
-                Dimension(name="pagePathAndScreenClass"),
+                Dimension(name="unifiedPagePathScreen"),
             ],
             metrics=[Metric(name="activeUsers")],
             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
