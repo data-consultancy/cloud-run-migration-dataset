@@ -12,6 +12,7 @@ DATASET_RAW = os.environ.get("DATASET_RAW")
 DATASET_SILVER = os.environ.get("DATASET_SILVER")
 RUN_DATE = os.environ.get("RUN_DATE")
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
+days_to_reprocess = os.environ.get("days_to_reprocess")
 
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
@@ -59,11 +60,67 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
     return result
 
 
-def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
+# def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
+#     """
+#     Retorna usuários ativos por página via GA4 Data API,
+#     salvando a URL completa (protocolo + host + path).
+#     """
+#     client = BetaAnalyticsDataClient()
+#     limit = 100000
+#     offset = 0
+#     result = []
+#     host = "https://www.jota.info"
+
+#     while True:
+#         request = RunReportRequest(
+#             property=f"properties/{property_id}",
+#             dimensions=[
+#                 Dimension(name="date"),
+#                 Dimension(name="unifiedPagePathScreen"),
+#             ],
+#             metrics=[Metric(name="activeUsers")],
+#             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+#             limit=limit,
+#             offset=offset,
+#         )
+
+#         response = client.run_report(request)
+
+#         if not response.rows:
+#             break
+
+#         for row in response.rows:
+#             raw_date = row.dimension_values[0].value
+#             formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+
+#             page_path = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
+#             page_location = f"{host}{page_path}" if page_path else None
+
+#             usuarios_ativos = int(row.metric_values[0].value)
+
+#             result.append({
+#                 "data": formatted_date,
+#                 "page_location": page_location,
+#                 "usuarios_ativos": usuarios_ativos,
+#             })
+
+#         if len(response.rows) < limit:
+#             break
+
+#         offset += limit
+
+#     return result
+
+from datetime import datetime, timedelta
+
+def get_active_users_per_page(property_id: str):
     """
-    Retorna usuários ativos por página via GA4 Data API,
-    salvando a URL completa (protocolo + host + path).
+    Reprocessa os últimos N dias de usuários ativos por página via GA4 Data API.
     """
+
+    end_date = datetime.utcnow().date() - timedelta(days=1)
+    start_date = end_date - timedelta(days=days_to_reprocess - 1)
+
     client = BetaAnalyticsDataClient()
     limit = 100000
     offset = 0
@@ -78,7 +135,12 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
                 Dimension(name="unifiedPagePathScreen"),
             ],
             metrics=[Metric(name="activeUsers")],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            date_ranges=[
+                DateRange(
+                    start_date=start_date.strftime("%Y-%m-%d"),
+                    end_date=end_date.strftime("%Y-%m-%d"),
+                )
+            ],
             limit=limit,
             offset=offset,
         )
