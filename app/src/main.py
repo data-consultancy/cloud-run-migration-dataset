@@ -12,7 +12,6 @@ DATASET_RAW = os.environ.get("DATASET_RAW")
 DATASET_SILVER = os.environ.get("DATASET_SILVER")
 RUN_DATE = os.environ.get("RUN_DATE")
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
-days_to_reprocess = os.environ.get("days_to_reprocess")
 
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
