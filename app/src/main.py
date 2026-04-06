@@ -461,8 +461,8 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
 
     rows = get_active_users_per_page(
         property_id=GA4_PROPERTY_ID,
-        start_date=start_date,
-        end_date=end_date,
+        # start_date=start_date,
+        # end_date=end_date,
     )
 
     if not rows:
