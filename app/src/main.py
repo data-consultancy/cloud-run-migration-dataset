@@ -264,6 +264,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` (
       data DATE,
       page_location STRING,
+      page_sk INT64,
       usuarios_ativos INT64
     )
     PARTITION BY data
@@ -423,7 +424,7 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     load_job = bq.load_table_from_json(
         rows,
         staging_table,
-        job_config=job_config,
+        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
         location=BQ_LOCATION,
     )
     load_job.result()
@@ -434,20 +435,29 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
       SELECT
         data,
         page_location,
+
+        ABS(FARM_FINGERPRINT(CONCAT(
+          COALESCE(REGEXP_EXTRACT(page_location, r'^https?://([^/]+)'), 'N/A'), '|',
+          COALESCE(SPLIT(page_location, '?')[SAFE_OFFSET(0)], 'N/A'), '|',
+          COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
+        ))) AS page_sk,
+
         usuarios_ativos
       FROM `{staging_table}`
       WHERE data = DATE('{start_date}')
     ) S
     ON T.data = S.data
       AND T.page_location = S.page_location
+
     WHEN MATCHED THEN
       UPDATE SET
-        T.usuarios_ativos = S.usuarios_ativos
-    WHEN NOT MATCHED THEN
-      INSERT (data, page_location, usuarios_ativos)
-      VALUES (S.data, S.page_location, S.usuarios_ativos);
-    """)
+        T.usuarios_ativos = S.usuarios_ativos,
+        T.page_sk = S.page_sk
 
+    WHEN NOT MATCHED THEN
+      INSERT (data, page_location, page_sk, usuarios_ativos)
+      VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos);
+    """)
     
 def process_day(bq: bigquery.Client, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
