@@ -304,8 +304,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}` (
       data STRING,
       usuarios_ativos INT64
-    )
-    PARTITION BY data;
+    );
     """)
 
     run_query(bq, f"""
@@ -330,8 +329,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}` (
       data STRING,
       usuarios_ativos INT64
-    )
-    PARTITION BY data;
+    );
     """)
 
 
