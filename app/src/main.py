@@ -112,30 +112,56 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
 
     return result
 
+# def get_active_users_per_month(property_id: str, start_date: str, end_date: str):
+#     """
+#     Retorna usuários ativos por mês via GA4 Data API no formato ANOMES (YYYYMM).
+#     """
+#     client = BetaAnalyticsDataClient()
+
+#     request = RunReportRequest(
+#         property=f"properties/{property_id}",
+#         dimensions=[Dimension(name="yearMonth")],
+#         metrics=[Metric(name="activeUsers")],
+#         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+#         limit=10000,
+#     )
+
+#     response = client.run_report(request)
+
+#     result = []
+
+#     for row in response.rows:
+#         anomes = row.dimension_values[0].value 
+
+#         result.append({
+#             "data": anomes,
+#             "usuarios_ativos": int(row.metric_values[0].value),
+#         })
+
+#     return result
+
 def get_active_users_per_month(property_id: str, start_date: str, end_date: str):
     """
-    Retorna usuários ativos por mês via GA4 Data API no formato ANOMES (YYYYMM).
+    Retorna usuários ativos do mês (igual ao dashboard GA4).
     """
     client = BetaAnalyticsDataClient()
 
     request = RunReportRequest(
         property=f"properties/{property_id}",
-        dimensions=[Dimension(name="yearMonth")],
         metrics=[Metric(name="activeUsers")],
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-        limit=10000,
     )
 
     response = client.run_report(request)
 
+    anomes = start_date[:7].replace("-", "")  # YYYYMM
+
     result = []
 
-    for row in response.rows:
-        anomes = row.dimension_values[0].value 
-
+    if response.rows:
         result.append({
             "data": anomes,
-            "usuarios_ativos": int(row.metric_values[0].value),
+            "usuarios_ativos": int(response.rows[0].metric_values[0].value),
         })
 
     return result
