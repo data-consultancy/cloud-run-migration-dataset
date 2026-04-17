@@ -23,8 +23,10 @@ T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
 T_DUSER_V2 = "dUser_Company_v2"
 T_USERS_ACTIVE = "usuarios_ativos_v2"
 T_USERS_BY_PAGE = "usuarios_paginas_v2"
+T_USERS_ACTIVE_MONTH = "usuarios_ativos_mensal_v2"
 T_STG_USERS_ACTIVE = "_stg_usuarios_ativos_v2"
 T_STG_USERS_BY_PAGE = "_stg_usuarios_paginas_v2"
+T_STG_USERS_ACTIVE_MONTH = "_stg_usuarios_ativos_mensal_v2"
 
 
 def run_query(bq: bigquery.Client, sql: str) -> None:
@@ -110,6 +112,33 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
 
     return result
 
+def get_active_users_per_month(property_id: str, start_date: str, end_date: str):
+    """
+    Retorna usuários ativos por mês via GA4 Data API no formato ANOMES (YYYYMM).
+    """
+    client = BetaAnalyticsDataClient()
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="yearMonth")],
+        metrics=[Metric(name="activeUsers")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        limit=10000,
+    )
+
+    response = client.run_report(request)
+
+    result = []
+
+    for row in response.rows:
+        anomes = row.dimension_values[0].value 
+
+        result.append({
+            "data": anomes,
+            "usuarios_ativos": int(row.metric_values[0].value),
+        })
+
+    return result
 
 
 def ensure_tables_v2(bq: bigquery.Client) -> None:
@@ -271,6 +300,13 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CLUSTER BY page_location;
     """)
 
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}` (
+      data STRING,
+      usuarios_ativos INT64
+    )
+    PARTITION BY data;
+    """)
 
     run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}` (
@@ -288,6 +324,14 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY data
     CLUSTER BY page_location;
+    """)
+
+    run_query(bq, f"""
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}` (
+      data STRING,
+      usuarios_ativos INT64
+    )
+    PARTITION BY data;
     """)
 
 
@@ -457,6 +501,75 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     WHEN NOT MATCHED THEN
       INSERT (data, page_location, page_sk, usuarios_ativos)
       VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos);
+    """)
+
+
+def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
+    """
+    Busca usuários ativos por mês via GA4 API e grava no BigQuery (ANOMES).
+    """
+    if not GA4_PROPERTY_ID:
+        raise ValueError("GA4_PROPERTY_ID não definido.")
+
+    # define range do mês
+    start_date = f"{suffix[:4]}-{suffix[4:6]}-01"
+
+    year = int(suffix[:4])
+    month = int(suffix[4:6])
+
+    if month == 12:
+        end_date = f"{year}-12-31"
+    else:
+        next_month = datetime.date(year, month + 1, 1)
+        end_date = (next_month - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    rows = get_active_users_per_month(
+        property_id=GA4_PROPERTY_ID,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if not rows:
+        print(f"Nenhum dado mensal retornado para {start_date}")
+        return
+
+    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}"
+    target_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}"
+
+    # limpa staging do mês
+    anomes = suffix[:6]
+
+    run_query(bq, f"""
+    DELETE FROM `{staging_table}`
+    WHERE data = '{anomes}';
+    """)
+
+    load_job = bq.load_table_from_json(
+        rows,
+        staging_table,
+        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
+        location=BQ_LOCATION,
+    )
+    load_job.result()
+
+    run_query(bq, f"""
+    MERGE `{target_table}` T
+    USING (
+      SELECT
+        data,
+        usuarios_ativos
+      FROM `{staging_table}`
+      WHERE data = '{anomes}'
+    ) S
+    ON T.data = S.data
+
+    WHEN MATCHED THEN
+      UPDATE SET
+        T.usuarios_ativos = S.usuarios_ativos
+
+    WHEN NOT MATCHED THEN
+      INSERT (data, usuarios_ativos)
+      VALUES (S.data, S.usuarios_ativos);
     """)
     
 def process_day(bq: bigquery.Client, suffix: str) -> None:
@@ -752,6 +865,8 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
 
     # 7) total de usuários por página via API
     upsert_total_users_by_page_api(bq, suffix)
+
+    upsert_active_users_monthly_api(bq, suffix)
 
 
 def main():
