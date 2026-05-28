@@ -63,7 +63,7 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
 
 def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
     """
-    Retorna usuários ativos por página via GA4 Data API,
+    Retorna usuários ativos e tempo médio de engajamento por página via GA4 Data API,
     salvando a URL completa (protocolo + host + path).
     """
     client = BetaAnalyticsDataClient()
@@ -79,7 +79,10 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
                 Dimension(name="date"),
                 Dimension(name="unifiedPagePathScreen"),
             ],
-            metrics=[Metric(name="activeUsers")],
+            metrics=[
+                Metric(name="activeUsers"),
+                Metric(name="userEngagementDuration"),
+            ],
             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
             limit=limit,
             offset=offset,
@@ -98,11 +101,12 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             page_location = f"{host}{page_path}" if page_path else None
 
             usuarios_ativos = int(row.metric_values[0].value)
-
+            page_time = row.metric_values[1].value 
             result.append({
                 "data": formatted_date,
                 "page_location": page_location,
                 "usuarios_ativos": usuarios_ativos,
+                "page_time": page_time,
             })
 
         if len(response.rows) < limit:
@@ -294,7 +298,8 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       data DATE,
       page_location STRING,
       page_sk INT64,
-      usuarios_ativos INT64
+      usuarios_ativos INT64,
+      page_time STRING
     )
     PARTITION BY data
     CLUSTER BY page_location;
@@ -319,7 +324,8 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}` (
       data DATE,
       page_location STRING,
-      usuarios_ativos INT64
+      usuarios_ativos INT64,
+      page_time STRING
     )
     PARTITION BY data
     CLUSTER BY page_location;
@@ -459,10 +465,6 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     WHERE data = DATE('{start_date}');
     """)
 
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND"
-    )
-
     load_job = bq.load_table_from_json(
         rows,
         staging_table,
@@ -484,7 +486,8 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
           COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
         ))) AS page_sk,
 
-        usuarios_ativos
+        usuarios_ativos,
+        page_time
       FROM `{staging_table}`
       WHERE data = DATE('{start_date}')
     ) S
@@ -494,13 +497,13 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     WHEN MATCHED THEN
       UPDATE SET
         T.usuarios_ativos = S.usuarios_ativos,
-        T.page_sk = S.page_sk
+        T.page_sk = S.page_sk,
+        T.page_time = S.page_time
 
     WHEN NOT MATCHED THEN
-      INSERT (data, page_location, page_sk, usuarios_ativos)
-      VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos);
+      INSERT (data, page_location, page_sk, usuarios_ativos, page_time)
+      VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos, S.page_time);
     """)
-
 
 def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
     """
