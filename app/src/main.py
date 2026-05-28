@@ -61,6 +61,15 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
     return result
 
 
+def format_engagement_time(microseconds: float) -> str:
+    total_seconds = int(microseconds / 1_000_000)
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    if minutes > 0:
+        return f"{minutes} min {seconds:02d} s"
+    return f"{total_seconds}s"
+
+
 def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
     """
     Retorna usuários ativos e tempo médio de engajamento por página via GA4 Data API,
@@ -101,7 +110,15 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             page_location = f"{host}{page_path}" if page_path else None
 
             usuarios_ativos = int(row.metric_values[0].value)
-            page_time = row.metric_values[1].value 
+            engagement_duration = float(row.metric_values[1].value)
+
+            # Calcula média por usuário e formata igual ao GA4
+            if usuarios_ativos > 0:
+                avg_microseconds = engagement_duration / usuarios_ativos
+                page_time = format_engagement_time(avg_microseconds)
+            else:
+                page_time = "0s"
+
             result.append({
                 "data": formatted_date,
                 "page_location": page_location,
