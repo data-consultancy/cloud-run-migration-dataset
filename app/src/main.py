@@ -98,6 +98,8 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
         )
 
         response = client.run_report(request)
+        print(response)
+
 
         if not response.rows:
             break
