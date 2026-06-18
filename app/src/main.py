@@ -12,6 +12,7 @@ DATASET_RAW = os.environ.get("DATASET_RAW")
 DATASET_SILVER = os.environ.get("DATASET_SILVER")
 RUN_DATE = os.environ.get("RUN_DATE")
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
+GA4_HOST = os.environ.get("GA4_HOST", "https://www.jota.info")
 
 BQ_LOCATION = "US"
 TZ_SP = ZoneInfo("America/Sao_Paulo")
@@ -29,16 +30,15 @@ T_STG_USERS_BY_PAGE = "_stg_usuarios_paginas_v2"
 T_STG_USERS_ACTIVE_MONTH = "_stg_usuarios_ativos_mensal_v2"
 
 
+def suffix_to_date(suffix: str) -> str:
+    return f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+
+
 def run_query(bq: bigquery.Client, sql: str) -> None:
     bq.query(sql, location=BQ_LOCATION).result()
 
 
-def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
-    """
-    Retorna usuários ativos por dia via GA4 Data API.
-    """
-    client = BetaAnalyticsDataClient()
-
+def get_active_users_per_day(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
     request = RunReportRequest(
         property=f"properties/{property_id}",
         dimensions=[Dimension(name="date")],
@@ -46,19 +46,16 @@ def get_active_users_per_day(property_id: str, start_date: str, end_date: str):
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
         limit=100000,
     )
-
-    response = client.run_report(request)
-
+    response = ga4.run_report(request)
     result = []
     for row in response.rows:
-        raw_date = row.dimension_values[0].value 
-        formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        raw_date = row.dimension_values[0].value
         result.append({
-            "data": formatted_date,
+            "data": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
             "usuarios_ativos": int(row.metric_values[0].value),
         })
-
     return result
+
 
 def format_engagement_time(seconds: float) -> str:
     total_seconds = int(seconds)
@@ -69,16 +66,10 @@ def format_engagement_time(seconds: float) -> str:
     return f"{total_seconds}s"
 
 
-def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
-    """
-    Retorna usuários ativos e tempo médio de engajamento por página via GA4 Data API,
-    salvando a URL completa (protocolo + host + path).
-    """
-    client = BetaAnalyticsDataClient()
+def get_active_users_per_page(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
     limit = 100000
     offset = 0
     result = []
-    host = "https://www.jota.info"
 
     while True:
         request = RunReportRequest(
@@ -95,31 +86,25 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
             limit=limit,
             offset=offset,
         )
-
-        response = client.run_report(request)
+        response = ga4.run_report(request)
 
         if not response.rows:
             break
 
         for row in response.rows:
             raw_date = row.dimension_values[0].value
-            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
-
             page_path = row.dimension_values[1].value if len(row.dimension_values) > 1 else None
-            page_location = f"{host}{page_path}" if page_path else None
-
+            page_location = f"{GA4_HOST}{page_path}" if page_path else None
             usuarios_ativos = int(row.metric_values[0].value)
-            engagement_duration = float(row.metric_values[1].value)  # já em segundos
+            engagement_duration = float(row.metric_values[1].value)
 
-            # Calcula média por usuário e formata igual ao GA4
             if usuarios_ativos > 0:
-                avg_seconds = engagement_duration / usuarios_ativos
-                page_time = format_engagement_time(avg_seconds)
+                page_time = format_engagement_time(engagement_duration / usuarios_ativos)
             else:
                 page_time = "0s"
 
             result.append({
-                "data": formatted_date,
+                "data": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
                 "page_location": page_location,
                 "usuarios_ativos": usuarios_ativos,
                 "page_time": page_time,
@@ -132,12 +117,8 @@ def get_active_users_per_page(property_id: str, start_date: str, end_date: str):
 
     return result
 
-def get_active_users_per_month(property_id: str, start_date: str, end_date: str):
-    """
-    Retorna usuários ativos por mês via GA4 Data API no formato ANOMES (YYYYMM).
-    """
-    client = BetaAnalyticsDataClient()
 
+def get_active_users_per_month(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
     request = RunReportRequest(
         property=f"properties/{property_id}",
         dimensions=[Dimension(name="yearMonth")],
@@ -145,20 +126,11 @@ def get_active_users_per_month(property_id: str, start_date: str, end_date: str)
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
         limit=10000,
     )
-
-    response = client.run_report(request)
-
-    result = []
-
-    for row in response.rows:
-        anomes = row.dimension_values[0].value 
-
-        result.append({
-            "data": anomes,
-            "usuarios_ativos": int(row.metric_values[0].value),
-        })
-
-    return result
+    response = ga4.run_report(request)
+    return [
+        {"data": row.dimension_values[0].value, "usuarios_ativos": int(row.metric_values[0].value)}
+        for row in response.rows
+    ]
 
 
 def ensure_tables_v2(bq: bigquery.Client) -> None:
@@ -171,32 +143,26 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       platform STRING,
       stream_id STRING,
       event_value_in_usd FLOAT64,
-
       session_id INT64,
       ga_session_number INT64,
       session_engaged STRING,
       engagement_time_msec INT64,
       is_active_user BOOL,
-
       param_source STRING,
       param_medium STRING,
       param_campaign STRING,
-
       user_id_param STRING,
       user_company STRING,
       user_plan STRING,
       is_pro_user_flag STRING,
-
       page_location STRING,
       page_title STRING,
-
       geo_continent STRING,
       geo_sub_continent STRING,
       geo_country STRING,
       geo_region STRING,
       geo_city STRING,
       geo_metro STRING,
-
       device_category STRING,
       device_operating_system STRING,
       device_operating_system_version STRING,
@@ -209,53 +175,42 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}` (
       event_date_parsed DATE,
       event_timestamp INT64,
       event_ts_utc TIMESTAMP,
-
       user_pseudo_id STRING,
       platform STRING,
       stream_id STRING,
       event_name STRING,
       event_value_in_usd FLOAT64,
-
       session_id INT64,
-
       traffic_sk INT64,
       sk_geo INT64,
       device_sk INT64,
       event_sk INT64,
       page_sk INT64,
       fact_id INT64,
-
       user_id STRING,
       user_company STRING,
       user_plan STRING,
       is_pro_user_flag STRING,
-
       traffic_source_source STRING,
       traffic_source_medium STRING,
       traffic_source_name STRING,
-
       geo_continent STRING,
       geo_sub_continent STRING,
       geo_country STRING,
       geo_region STRING,
       geo_city STRING,
       geo_metro STRING,
-
       page_url_clean STRING,
       hostname_calculado STRING
     )
     PARTITION BY event_date_parsed
     CLUSTER BY event_name, user_pseudo_id, session_id;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}` (
       data_evento DATE,
       event_sk INT64,
@@ -271,9 +226,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY data_evento
     CLUSTER BY event_sk, traffic_sk, user_company;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}` (
       data_evento DATE,
       page_sk INT64,
@@ -286,9 +239,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY data_evento
     CLUSTER BY page_sk, traffic_sk;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` (
       user_company STRING,
       plano_atual STRING,
@@ -299,17 +250,13 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       segmento_mercado STRING,
       account_manager STRING
     );
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` (
       data DATE,
       usuarios_ativos INT64
     )
     PARTITION BY data;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` (
       data DATE,
       page_location STRING,
@@ -319,24 +266,18 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY data
     CLUSTER BY page_location;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}` (
       data STRING,
       usuarios_ativos INT64
     );
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}` (
       data DATE,
       usuarios_ativos INT64
     )
     PARTITION BY data;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}` (
       data DATE,
       page_location STRING,
@@ -345,9 +286,7 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     )
     PARTITION BY data
     CLUSTER BY page_location;
-    """)
 
-    run_query(bq, f"""
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}` (
       data STRING,
       usuarios_ativos INT64
@@ -355,21 +294,14 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
     """)
 
 
-def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
-    """
-    Busca usuários ativos via GA4 API e grava no BigQuery via staging + MERGE.
-    """
+def upsert_active_users_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
     if not GA4_PROPERTY_ID:
         raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
 
-    start_date = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+    start_date = suffix_to_date(suffix)
     end_date = start_date
 
-    rows = get_active_users_per_day(
-        property_id=GA4_PROPERTY_ID,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    rows = get_active_users_per_day(ga4, property_id=GA4_PROPERTY_ID, start_date=start_date, end_date=end_date)
 
     if not rows:
         print(f"Nenhum registro de usuários ativos retornado pela API para {start_date}")
@@ -382,14 +314,10 @@ def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
     WHERE data = DATE('{start_date}');
     """)
 
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND"
-    )
-
     load_job = bq.load_table_from_json(
         rows,
         staging_table,
-        job_config=job_config,
+        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
         location=BQ_LOCATION,
     )
     load_job.result()
@@ -397,78 +325,27 @@ def upsert_active_users_api(bq: bigquery.Client, suffix: str) -> None:
     run_query(bq, f"""
     MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
     USING (
-      SELECT
-        data,
-        usuarios_ativos
+      SELECT data, usuarios_ativos
       FROM `{staging_table}`
       WHERE data = DATE('{start_date}')
     ) S
     ON T.data = S.data
     WHEN MATCHED THEN
-      UPDATE SET
-        T.usuarios_ativos = S.usuarios_ativos
-    WHEN NOT MATCHED THEN
-      INSERT (data, usuarios_ativos)
-      VALUES (S.data, S.usuarios_ativos);
-    """)
-
-    if not rows:
-        print(f"Nenhum registro de usuários ativos retornado pela API para {start_date}")
-        return
-
-    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}"
-
-    run_query(bq, f"""
-    DELETE FROM `{staging_table}`
-    WHERE data = DATE('{start_date}');
-    """)
-
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND"
-    )
-
-    load_job = bq.load_table_from_json(
-        rows,
-        staging_table,
-        job_config=job_config,
-        location=BQ_LOCATION,
-    )
-    load_job.result()
-
-    run_query(bq, f"""
-    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
-    USING (
-      SELECT
-        data,
-        usuarios_ativos
-      FROM `{staging_table}`
-      WHERE data = DATE('{start_date}')
-    ) S
-    ON T.data = S.data
-    WHEN MATCHED THEN
-      UPDATE SET
-        T.usuarios_ativos = S.usuarios_ativos
+      UPDATE SET T.usuarios_ativos = S.usuarios_ativos
     WHEN NOT MATCHED THEN
       INSERT (data, usuarios_ativos)
       VALUES (S.data, S.usuarios_ativos);
     """)
 
 
-def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
-    """
-    Busca usuários ativos por página via GA4 API e grava no BigQuery via staging + MERGE.
-    """
+def upsert_total_users_by_page_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
     if not GA4_PROPERTY_ID:
         raise ValueError("A variável de ambiente GA4_PROPERTY_ID não foi definida.")
 
-    start_date = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+    start_date = suffix_to_date(suffix)
     end_date = start_date
 
-    rows = get_active_users_per_page(
-        property_id=GA4_PROPERTY_ID,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    rows = get_active_users_per_page(ga4, property_id=GA4_PROPERTY_ID, start_date=start_date, end_date=end_date)
 
     if not rows:
         print(f"Nenhum registro de usuários por página retornado pela API para {start_date}")
@@ -495,13 +372,11 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
       SELECT
         data,
         page_location,
-
         ABS(FARM_FINGERPRINT(CONCAT(
           COALESCE(REGEXP_EXTRACT(page_location, r'^https?://([^/]+)'), 'N/A'), '|',
           COALESCE(SPLIT(page_location, '?')[SAFE_OFFSET(0)], 'N/A'), '|',
           COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
         ))) AS page_sk,
-
         usuarios_ativos,
         page_time
       FROM `{staging_table}`
@@ -509,28 +384,22 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, suffix: str) -> None:
     ) S
     ON T.data = S.data
       AND T.page_location = S.page_location
-
     WHEN MATCHED THEN
       UPDATE SET
         T.usuarios_ativos = S.usuarios_ativos,
         T.page_sk = S.page_sk,
         T.page_time = S.page_time
-
     WHEN NOT MATCHED THEN
       INSERT (data, page_location, page_sk, usuarios_ativos, page_time)
       VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos, S.page_time);
     """)
 
-def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
-    """
-    Busca usuários ativos por mês via GA4 API e grava no BigQuery (ANOMES).
-    """
+
+def upsert_active_users_monthly_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
     if not GA4_PROPERTY_ID:
         raise ValueError("GA4_PROPERTY_ID não definido.")
 
-    # define range do mês
     start_date = f"{suffix[:4]}-{suffix[4:6]}-01"
-
     year = int(suffix[:4])
     month = int(suffix[4:6])
 
@@ -540,11 +409,7 @@ def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
         next_month = datetime.date(year, month + 1, 1)
         end_date = (next_month - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    rows = get_active_users_per_month(
-        property_id=GA4_PROPERTY_ID,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    rows = get_active_users_per_month(ga4, property_id=GA4_PROPERTY_ID, start_date=start_date, end_date=end_date)
 
     if not rows:
         print(f"Nenhum dado mensal retornado para {start_date}")
@@ -552,8 +417,6 @@ def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
 
     staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}"
     target_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}"
-
-    # limpa staging do mês
     anomes = suffix[:6]
 
     run_query(bq, f"""
@@ -572,28 +435,23 @@ def upsert_active_users_monthly_api(bq: bigquery.Client, suffix: str) -> None:
     run_query(bq, f"""
     MERGE `{target_table}` T
     USING (
-      SELECT
-        data,
-        usuarios_ativos
+      SELECT data, usuarios_ativos
       FROM `{staging_table}`
       WHERE data = '{anomes}'
     ) S
     ON T.data = S.data
-
     WHEN MATCHED THEN
-      UPDATE SET
-        T.usuarios_ativos = S.usuarios_ativos
-
+      UPDATE SET T.usuarios_ativos = S.usuarios_ativos
     WHEN NOT MATCHED THEN
       INSERT (data, usuarios_ativos)
       VALUES (S.data, S.usuarios_ativos);
     """)
-    
-def process_day(bq: bigquery.Client, suffix: str) -> None:
+
+
+def process_day(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
 
-    # 1) RAW day -> ga4_events_v2
     run_query(bq, f"""
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
     WHERE event_date_parsed = {day_date_expr};
@@ -703,7 +561,6 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     WHERE PARSE_DATE('%Y%m%d', e.event_date) = {day_date_expr};
     """)
 
-    # 2) ga4_events_v2 -> fEvents_v2
     run_query(bq, f"""
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
     WHERE event_date_parsed = {day_date_expr};
@@ -796,7 +653,6 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     FROM base;
     """)
 
-    # 3) agregada main v2
     run_query(bq, f"""
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}`
     WHERE data_evento = {day_date_expr};
@@ -814,7 +670,6 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     GROUP BY 1,2,3,4,5,6,7,8;
     """)
 
-    # 4) agregada conteudo v2
     run_query(bq, f"""
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}`
     WHERE data_evento = {day_date_expr};
@@ -847,7 +702,6 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     GROUP BY 1,2,3,4,5,6;
     """)
 
-    # 5) dUser_Company v2
     run_query(bq, f"""
     MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` T
     USING (
@@ -877,13 +731,9 @@ def process_day(bq: bigquery.Client, suffix: str) -> None:
     );
     """)
 
-    # 6) usuários ativos via API
-    upsert_active_users_api(bq, suffix)
-
-    # 7) total de usuários por página via API
-    upsert_total_users_by_page_api(bq, suffix)
-
-    upsert_active_users_monthly_api(bq, suffix)
+    upsert_active_users_api(bq, ga4, suffix)
+    upsert_total_users_by_page_api(bq, ga4, suffix)
+    upsert_active_users_monthly_api(bq, ga4, suffix)
 
 
 def main():
@@ -893,8 +743,9 @@ def main():
         now_sp = datetime.datetime.now(TZ_SP)
         suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
 
-    day_ref = f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
+    day_ref = suffix_to_date(suffix)
     bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+    ga4 = BetaAnalyticsDataClient()
 
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
 
@@ -919,7 +770,7 @@ def main():
     print("Tabelas validadas/criadas com sucesso")
 
     print("Iniciando processamento do dia...")
-    process_day(bq, suffix)
+    process_day(bq, ga4, suffix)
     print("Processamento principal concluido")
 
     print("Processamento finalizado com sucesso")
@@ -933,6 +784,7 @@ def main():
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}")
 
 
 if __name__ == "__main__":
