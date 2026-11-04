@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest==8.3.3
+# Fusos horários para zoneinfo em máquinas Windows (a imagem Linux já os tem)
+tzdata==2024.2

@@ -1,4 +1,6 @@
 import os
+import re
+import uuid
 import datetime
 from zoneinfo import ZoneInfo
 from google.cloud import bigquery
@@ -22,20 +24,70 @@ T_FEVENTS_V2 = "fEvents_v2"
 T_AG_MAIN_V2 = "fEventos_Agregada_Main_v2"
 T_AG_CONT_V2 = "fEventos_Agregada_Conteudo_v2"
 T_DUSER_V2 = "dUser_Company_v2"
+T_DUSER_DIARIO_V2 = "dUser_Company_diario_v2"
 T_USERS_ACTIVE = "usuarios_ativos_v2"
 T_USERS_BY_PAGE = "usuarios_paginas_v2"
 T_USERS_ACTIVE_MONTH = "usuarios_ativos_mensal_v2"
-T_STG_USERS_ACTIVE = "_stg_usuarios_ativos_v2"
-T_STG_USERS_BY_PAGE = "_stg_usuarios_paginas_v2"
-T_STG_USERS_ACTIVE_MONTH = "_stg_usuarios_ativos_mensal_v2"
+# Prefixos das tabelas temporárias de staging (uma por execução, com sufixo uuid e expiração automática)
+T_TMP_USERS_ACTIVE = "_tmp_usuarios_ativos_v2"
+T_TMP_USERS_BY_PAGE = "_tmp_usuarios_paginas_v2"
+T_TMP_USERS_ACTIVE_MONTH = "_tmp_usuarios_ativos_mensal_v2"
+STAGING_EXPIRATION_HOURS = 6
+
+MISSING_TABLE_ALERT_HOURS = int(os.environ.get("MISSING_TABLE_ALERT_HOURS", "48"))
+PENDING_LOOKBACK_DAYS = int(os.environ.get("PENDING_LOOKBACK_DAYS", "5"))
+
+# Casa apenas events_AAAAMMDD; events_intraday_AAAAMMDD fica de fora
+EVENTS_TABLE_RE = re.compile(r"^events_(\d{8})$")
+
+SCHEMA_USERS_ACTIVE = [
+    bigquery.SchemaField("data", "DATE"),
+    bigquery.SchemaField("usuarios_ativos", "INT64"),
+]
+SCHEMA_USERS_BY_PAGE = [
+    bigquery.SchemaField("data", "DATE"),
+    bigquery.SchemaField("page_location", "STRING"),
+    bigquery.SchemaField("usuarios_ativos", "INT64"),
+    bigquery.SchemaField("page_time", "STRING"),
+]
+SCHEMA_USERS_ACTIVE_MONTH = [
+    bigquery.SchemaField("data", "STRING"),
+    bigquery.SchemaField("usuarios_ativos", "INT64"),
+]
 
 
 def suffix_to_date(suffix: str) -> str:
     return f"{suffix[:4]}-{suffix[4:6]}-{suffix[6:8]}"
 
 
+def now_sp() -> datetime.datetime:
+    return datetime.datetime.now(TZ_SP)
+
+
 def run_query(bq: bigquery.Client, sql: str) -> None:
     bq.query(sql, location=BQ_LOCATION).result()
+
+
+def query_rows(bq: bigquery.Client, sql: str) -> list:
+    return list(bq.query(sql, location=BQ_LOCATION).result())
+
+
+def create_temp_table(bq: bigquery.Client, prefix: str, schema: list) -> str:
+    table_id = f"{PROJECT_ID}.{DATASET_SILVER}.{prefix}_{uuid.uuid4().hex}"
+    table = bigquery.Table(table_id, schema=schema)
+    table.expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=STAGING_EXPIRATION_HOURS)
+    bq.create_table(table)
+    return table_id
+
+
+def load_rows(bq: bigquery.Client, table_id: str, schema: list, rows: list) -> None:
+    load_job = bq.load_table_from_json(
+        rows,
+        table_id,
+        job_config=bigquery.LoadJobConfig(schema=schema, write_disposition="WRITE_APPEND"),
+        location=BQ_LOCATION,
+    )
+    load_job.result()
 
 
 def get_active_users_per_day(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
@@ -251,6 +303,16 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       account_manager STRING
     );
 
+    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}` (
+      user_company STRING,
+      data DATE,
+      total_eventos INT64,
+      ultimo_plano STRING,
+      ts_ultimo_plano INT64
+    )
+    PARTITION BY data
+    CLUSTER BY user_company;
+
     CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` (
       data DATE,
       usuarios_ativos INT64
@@ -271,26 +333,6 @@ def ensure_tables_v2(bq: bigquery.Client) -> None:
       data STRING,
       usuarios_ativos INT64
     );
-
-    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}` (
-      data DATE,
-      usuarios_ativos INT64
-    )
-    PARTITION BY data;
-
-    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}` (
-      data DATE,
-      page_location STRING,
-      usuarios_ativos INT64,
-      page_time STRING
-    )
-    PARTITION BY data
-    CLUSTER BY page_location;
-
-    CREATE TABLE IF NOT EXISTS `{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}` (
-      data STRING,
-      usuarios_ativos INT64
-    );
     """)
 
 
@@ -307,35 +349,29 @@ def upsert_active_users_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, s
         print(f"Nenhum registro de usuários ativos retornado pela API para {start_date}")
         return
 
-    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE}"
+    staging_table = create_temp_table(bq, T_TMP_USERS_ACTIVE, SCHEMA_USERS_ACTIVE)
+    try:
+        load_rows(bq, staging_table, SCHEMA_USERS_ACTIVE, rows)
 
-    run_query(bq, f"""
-    DELETE FROM `{staging_table}`
-    WHERE data = DATE('{start_date}');
-    """)
-
-    load_job = bq.load_table_from_json(
-        rows,
-        staging_table,
-        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
-        location=BQ_LOCATION,
-    )
-    load_job.result()
-
-    run_query(bq, f"""
-    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
-    USING (
-      SELECT data, usuarios_ativos
-      FROM `{staging_table}`
-      WHERE data = DATE('{start_date}')
-    ) S
-    ON T.data = S.data
-    WHEN MATCHED THEN
-      UPDATE SET T.usuarios_ativos = S.usuarios_ativos
-    WHEN NOT MATCHED THEN
-      INSERT (data, usuarios_ativos)
-      VALUES (S.data, S.usuarios_ativos);
-    """)
+        run_query(bq, f"""
+        MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}` T
+        USING (
+          SELECT data, usuarios_ativos
+          FROM `{staging_table}`
+          WHERE data = DATE('{start_date}')
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY data ORDER BY usuarios_ativos DESC) = 1
+        ) S
+        -- Filtro constante na partição do destino: o MERGE lê só o dia, não a tabela inteira
+        ON T.data = S.data
+          AND T.data = DATE('{start_date}')
+        WHEN MATCHED THEN
+          UPDATE SET T.usuarios_ativos = S.usuarios_ativos
+        WHEN NOT MATCHED THEN
+          INSERT (data, usuarios_ativos)
+          VALUES (S.data, S.usuarios_ativos);
+        """)
+    finally:
+        bq.delete_table(staging_table, not_found_ok=True)
 
 
 def upsert_total_users_by_page_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
@@ -351,48 +387,46 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, ga4: BetaAnalyticsDataCl
         print(f"Nenhum registro de usuários por página retornado pela API para {start_date}")
         return
 
-    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_BY_PAGE}"
+    staging_table = create_temp_table(bq, T_TMP_USERS_BY_PAGE, SCHEMA_USERS_BY_PAGE)
+    try:
+        load_rows(bq, staging_table, SCHEMA_USERS_BY_PAGE, rows)
 
-    run_query(bq, f"""
-    DELETE FROM `{staging_table}`
-    WHERE data = DATE('{start_date}');
-    """)
-
-    load_job = bq.load_table_from_json(
-        rows,
-        staging_table,
-        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
-        location=BQ_LOCATION,
-    )
-    load_job.result()
-
-    run_query(bq, f"""
-    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` T
-    USING (
-      SELECT
-        data,
-        page_location,
-        ABS(FARM_FINGERPRINT(CONCAT(
-          COALESCE(REGEXP_EXTRACT(page_location, r'^https?://([^/]+)'), 'N/A'), '|',
-          COALESCE(SPLIT(page_location, '?')[SAFE_OFFSET(0)], 'N/A'), '|',
-          COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
-        ))) AS page_sk,
-        usuarios_ativos,
-        page_time
-      FROM `{staging_table}`
-      WHERE data = DATE('{start_date}')
-    ) S
-    ON T.data = S.data
-      AND T.page_location = S.page_location
-    WHEN MATCHED THEN
-      UPDATE SET
-        T.usuarios_ativos = S.usuarios_ativos,
-        T.page_sk = S.page_sk,
-        T.page_time = S.page_time
-    WHEN NOT MATCHED THEN
-      INSERT (data, page_location, page_sk, usuarios_ativos, page_time)
-      VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos, S.page_time);
-    """)
+        # page_location nulo é comparado via COALESCE para que reexecuções não insiram a linha de novo.
+        # O filtro constante em T.data faz o MERGE ler só a partição do dia no destino.
+        run_query(bq, f"""
+        MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}` T
+        USING (
+          SELECT
+            data,
+            page_location,
+            ABS(FARM_FINGERPRINT(CONCAT(
+              COALESCE(REGEXP_EXTRACT(page_location, r'^https?://([^/]+)'), 'N/A'), '|',
+              COALESCE(SPLIT(page_location, '?')[SAFE_OFFSET(0)], 'N/A'), '|',
+              COALESCE(REGEXP_EXTRACT(page_location, r'https?://[^/]+(/.*)'), 'N/A')
+            ))) AS page_sk,
+            usuarios_ativos,
+            page_time
+          FROM `{staging_table}`
+          WHERE data = DATE('{start_date}')
+          QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY data, page_location
+            ORDER BY usuarios_ativos DESC, page_time DESC
+          ) = 1
+        ) S
+        ON T.data = S.data
+          AND T.data = DATE('{start_date}')
+          AND COALESCE(T.page_location, '') = COALESCE(S.page_location, '')
+        WHEN MATCHED THEN
+          UPDATE SET
+            T.usuarios_ativos = S.usuarios_ativos,
+            T.page_sk = S.page_sk,
+            T.page_time = S.page_time
+        WHEN NOT MATCHED THEN
+          INSERT (data, page_location, page_sk, usuarios_ativos, page_time)
+          VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos, S.page_time);
+        """)
+    finally:
+        bq.delete_table(staging_table, not_found_ok=True)
 
 
 def upsert_active_users_monthly_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
@@ -415,40 +449,207 @@ def upsert_active_users_monthly_api(bq: bigquery.Client, ga4: BetaAnalyticsDataC
         print(f"Nenhum dado mensal retornado para {start_date}")
         return
 
-    staging_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_STG_USERS_ACTIVE_MONTH}"
     target_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}"
     anomes = suffix[:6]
 
-    run_query(bq, f"""
-    DELETE FROM `{staging_table}`
-    WHERE data = '{anomes}';
-    """)
+    staging_table = create_temp_table(bq, T_TMP_USERS_ACTIVE_MONTH, SCHEMA_USERS_ACTIVE_MONTH)
+    try:
+        load_rows(bq, staging_table, SCHEMA_USERS_ACTIVE_MONTH, rows)
 
-    load_job = bq.load_table_from_json(
-        rows,
-        staging_table,
-        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
-        location=BQ_LOCATION,
+        run_query(bq, f"""
+        MERGE `{target_table}` T
+        USING (
+          SELECT data, usuarios_ativos
+          FROM `{staging_table}`
+          WHERE data = '{anomes}'
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY data ORDER BY usuarios_ativos DESC) = 1
+        ) S
+        ON T.data = S.data
+        WHEN MATCHED THEN
+          UPDATE SET T.usuarios_ativos = S.usuarios_ativos
+        WHEN NOT MATCHED THEN
+          INSERT (data, usuarios_ativos)
+          VALUES (S.data, S.usuarios_ativos);
+        """)
+    finally:
+        bq.delete_table(staging_table, not_found_ok=True)
+
+
+def load_data_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
+    upsert_active_users_api(bq, ga4, suffix)
+    upsert_total_users_by_page_api(bq, ga4, suffix)
+    upsert_active_users_monthly_api(bq, ga4, suffix)
+
+
+def list_events_suffixes(bq: bigquery.Client) -> list:
+    suffixes = []
+    for table in bq.list_tables(f"{PROJECT_ID}.{DATASET_RAW}"):
+        match = EVENTS_TABLE_RE.match(table.table_id)
+        if match:
+            suffixes.append(match.group(1))
+    return sorted(suffixes)
+
+
+def window_suffixes(lookback_days: int) -> list:
+    """Dias de (ontem - lookback_days + 1) até ontem, em ordem cronológica."""
+    yesterday = now_sp().date() - datetime.timedelta(days=1)
+    return [
+        (yesterday - datetime.timedelta(days=i)).strftime("%Y%m%d")
+        for i in range(lookback_days - 1, -1, -1)
+    ]
+
+
+def loaded_suffixes(bq: bigquery.Client, first_suffix: str, last_suffix: str) -> set:
+    # Um dia só conta como carregado se chegou até a última tabela do process_day,
+    # para que um retry após falha no meio do processamento refaça o dia.
+    rows = query_rows(bq, f"""
+    SELECT FORMAT_DATE('%Y%m%d', event_date_parsed) AS suffix
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}`
+    WHERE event_date_parsed BETWEEN PARSE_DATE('%Y%m%d', '{first_suffix}') AND PARSE_DATE('%Y%m%d', '{last_suffix}')
+    GROUP BY 1
+    INTERSECT DISTINCT
+    SELECT FORMAT_DATE('%Y%m%d', data_evento) AS suffix
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}`
+    WHERE data_evento BETWEEN PARSE_DATE('%Y%m%d', '{first_suffix}') AND PARSE_DATE('%Y%m%d', '{last_suffix}')
+    GROUP BY 1
+    """)
+    return {row["suffix"] for row in rows}
+
+
+def pending_days(bq: bigquery.Client, lookback_days: int = 14) -> list:
+    """Tabelas events_AAAAMMDD da janela que ainda não foram carregadas, em ordem cronológica."""
+    window = window_suffixes(lookback_days)
+    available = set(list_events_suffixes(bq)) & set(window)
+    if not available:
+        return []
+    loaded = loaded_suffixes(bq, window[0], window[-1])
+    return sorted(available - loaded)
+
+
+def hours_since_day_end(suffix: str) -> float:
+    day = datetime.datetime.strptime(suffix, "%Y%m%d").date()
+    day_end = datetime.datetime.combine(day + datetime.timedelta(days=1), datetime.time(0, 0), tzinfo=TZ_SP)
+    return (now_sp() - day_end).total_seconds() / 3600
+
+
+def check_missing_tables(bq: bigquery.Client, lookback_days: int) -> list:
+    """Avisa sobre events_ ausentes dentro da tolerância e devolve erros das que passaram do prazo."""
+    available = list_events_suffixes(bq)
+    errors = []
+    for suffix in window_suffixes(lookback_days):
+        if suffix in available or (available and suffix < available[0]):
+            continue
+        source = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
+        hours = hours_since_day_end(suffix)
+        if hours > MISSING_TABLE_ALERT_HOURS:
+            errors.append(
+                f"Tabela de origem {source} ausente há {hours:.0f}h "
+                f"(tolerância MISSING_TABLE_ALERT_HOURS={MISSING_TABLE_ALERT_HOURS}h)"
+            )
+        else:
+            print(
+                f"AVISO: tabela de origem {source} ainda não exportada ({hours:.0f}h após o fim do dia, "
+                f"tolerância {MISSING_TABLE_ALERT_HOURS}h). Será processada numa próxima execução."
+            )
+    return errors
+
+
+def duser_daily_insert_sql(fevents_filter: str) -> str:
+    """Resumo por empresa e dia de fEvents_v2: contagem e último plano preenchido com seu timestamp."""
+    return f"""
+    INSERT INTO `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}` (
+      user_company, data, total_eventos, ultimo_plano, ts_ultimo_plano
     )
-    load_job.result()
+    SELECT
+      user_company,
+      event_date_parsed AS data,
+      COUNT(*) AS total_eventos,
+      ARRAY_AGG(user_plan IGNORE NULLS ORDER BY event_timestamp DESC, user_plan DESC LIMIT 1)[SAFE_OFFSET(0)] AS ultimo_plano,
+      MAX(IF(user_plan IS NOT NULL, event_timestamp, NULL)) AS ts_ultimo_plano
+    FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
+    WHERE {fevents_filter}
+      AND user_company IS NOT NULL
+    GROUP BY user_company, event_date_parsed;
+    """
 
-    run_query(bq, f"""
-    MERGE `{target_table}` T
+
+def duser_merge_sql(company_filter: str) -> str:
+    """Recalcula valores absolutos de dUser_Company_v2 a partir do resumo diário (sem soma incremental)."""
+    return f"""
+    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` T
     USING (
-      SELECT data, usuarios_ativos
-      FROM `{staging_table}`
-      WHERE data = '{anomes}'
+      SELECT
+        user_company,
+        ARRAY_AGG(ultimo_plano IGNORE NULLS ORDER BY ts_ultimo_plano DESC, ultimo_plano DESC LIMIT 1)[SAFE_OFFSET(0)] AS plano_atual,
+        MIN(data) AS data_primeira_aparicao,
+        MAX(data) AS data_ultima_aparicao,
+        SUM(total_eventos) AS total_eventos_historicos
+      FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}`
+      WHERE {company_filter}
+      GROUP BY 1
     ) S
-    ON T.data = S.data
-    WHEN MATCHED THEN
-      UPDATE SET T.usuarios_ativos = S.usuarios_ativos
-    WHEN NOT MATCHED THEN
-      INSERT (data, usuarios_ativos)
-      VALUES (S.data, S.usuarios_ativos);
+    ON T.user_company = S.user_company
+    WHEN MATCHED THEN UPDATE SET
+      T.plano_atual = COALESCE(S.plano_atual, T.plano_atual),
+      T.data_primeira_aparicao = S.data_primeira_aparicao,
+      T.data_ultima_aparicao = S.data_ultima_aparicao,
+      T.total_eventos_historicos = S.total_eventos_historicos
+    WHEN NOT MATCHED THEN INSERT (
+      user_company, plano_atual, data_primeira_aparicao, data_ultima_aparicao, total_eventos_historicos,
+      tier_cliente, segmento_mercado, account_manager
+    ) VALUES (
+      S.user_company, S.plano_atual, S.data_primeira_aparicao, S.data_ultima_aparicao, S.total_eventos_historicos,
+      NULL, NULL, NULL
+    );
+    """
+
+
+def upsert_duser_company(bq: bigquery.Client, suffix: str) -> None:
+    """Regrava o resumo do dia e recalcula dUser só para as empresas afetadas, lendo apenas o dia de fEvents_v2."""
+    day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
+    daily_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}"
+
+    # Empresas que estavam no dia antes da regravação também são recalculadas,
+    # para o caso de o reprocessamento removê-las do dia.
+    run_query(bq, f"""
+    DECLARE empresas ARRAY<STRING> DEFAULT ARRAY(
+      SELECT DISTINCT user_company FROM `{daily_table}` WHERE data = {day_date_expr}
+    );
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM `{daily_table}`
+    WHERE data = {day_date_expr};
+    {duser_daily_insert_sql(f"event_date_parsed = {day_date_expr}")}
+    SET empresas = ARRAY_CONCAT(empresas, ARRAY(
+      SELECT DISTINCT user_company FROM `{daily_table}` WHERE data = {day_date_expr}
+    ));
+    {duser_merge_sql("user_company IN UNNEST(empresas)")}
+    COMMIT TRANSACTION;
     """)
 
 
-def process_day(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
+def ensure_duser_daily_backfill(bq: bigquery.Client) -> None:
+    """Na primeira execução, preenche o resumo diário com todo o histórico e corrige dUser inteira."""
+    daily_table = f"{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}"
+    # COUNT(*) sem filtro é respondido pelos metadados (0 bytes)
+    rows = query_rows(bq, f"SELECT COUNT(*) AS n FROM `{daily_table}`")
+    if rows[0]["n"] > 0:
+        return
+
+    print(f"{T_DUSER_DIARIO_V2} vazia: carga inicial a partir de todo o histórico de {T_FEVENTS_V2}...")
+    run_query(bq, f"""
+    BEGIN TRANSACTION;
+
+    DELETE FROM `{daily_table}` WHERE TRUE;
+    {duser_daily_insert_sql("TRUE")}
+    {duser_merge_sql("TRUE")}
+    COMMIT TRANSACTION;
+    """)
+    print("Carga inicial concluida")
+
+
+def process_day(bq: bigquery.Client, suffix: str) -> None:
     day_date_expr = f"PARSE_DATE('%Y%m%d', '{suffix}')"
     source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
 
@@ -653,6 +854,10 @@ def process_day(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) 
     FROM base;
     """)
 
+    # dUser roda antes das agregadas: fEventos_Agregada_Conteudo_v2 é a última tabela gravada e
+    # marca o dia como carregado (ver loaded_suffixes), então uma falha aqui faz o retry refazer o dia.
+    upsert_duser_company(bq, suffix)
+
     run_query(bq, f"""
     DELETE FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}`
     WHERE data_evento = {day_date_expr};
@@ -702,89 +907,87 @@ def process_day(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) 
     GROUP BY 1,2,3,4,5,6;
     """)
 
-    run_query(bq, f"""
-    MERGE `{PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}` T
-    USING (
-      SELECT
-        user_company,
-        ARRAY_AGG(user_plan ORDER BY event_date_parsed DESC LIMIT 1)[OFFSET(0)] AS plano_atual,
-        MIN(event_date_parsed) AS data_primeira_aparicao,
-        MAX(event_date_parsed) AS data_ultima_aparicao,
-        COUNT(*) AS total_eventos_historicos
-      FROM `{PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}`
-      WHERE event_date_parsed = {day_date_expr}
-        AND user_company IS NOT NULL
-      GROUP BY 1
-    ) S
-    ON T.user_company = S.user_company
-    WHEN MATCHED THEN UPDATE SET
-      T.plano_atual = COALESCE(S.plano_atual, T.plano_atual),
-      T.data_primeira_aparicao = LEAST(T.data_primeira_aparicao, S.data_primeira_aparicao),
-      T.data_ultima_aparicao = GREATEST(T.data_ultima_aparicao, S.data_ultima_aparicao),
-      T.total_eventos_historicos = T.total_eventos_historicos + S.total_eventos_historicos
-    WHEN NOT MATCHED THEN INSERT (
-      user_company, plano_atual, data_primeira_aparicao, data_ultima_aparicao, total_eventos_historicos,
-      tier_cliente, segmento_mercado, account_manager
-    ) VALUES (
-      S.user_company, S.plano_atual, S.data_primeira_aparicao, S.data_ultima_aparicao, S.total_eventos_historicos,
-      NULL, NULL, NULL
-    );
-    """)
 
-    upsert_active_users_api(bq, ga4, suffix)
-    upsert_total_users_by_page_api(bq, ga4, suffix)
-    upsert_active_users_monthly_api(bq, ga4, suffix)
+def table_exists(bq: bigquery.Client, table_id: str) -> bool:
+    try:
+        bq.get_table(table_id)
+        return True
+    except NotFound:
+        return False
 
 
-def main():
+def run(bq: bigquery.Client, ga4: BetaAnalyticsDataClient) -> None:
+    if RUN_DATE and not re.fullmatch(r"\d{8}", RUN_DATE):
+        raise ValueError(f"RUN_DATE inválido: {RUN_DATE!r}. Use o formato AAAAMMDD.")
+
     if RUN_DATE:
-        suffix = RUN_DATE
+        api_suffix = RUN_DATE
     else:
-        now_sp = datetime.datetime.now(TZ_SP)
-        suffix = (now_sp.date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
-
-    day_ref = suffix_to_date(suffix)
-    bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-    ga4 = BetaAnalyticsDataClient()
-
-    source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{suffix}"
+        api_suffix = (now_sp().date() - datetime.timedelta(days=1)).strftime("%Y%m%d")
 
     print("=" * 100)
     print("Inicio do processamento GA4")
-    print(f"Data de referencia: {day_ref}")
+    print(f"Modo: {'RUN_DATE=' + RUN_DATE if RUN_DATE else 'dias pendentes'}")
     print(f"Projeto: {PROJECT_ID}")
     print(f"Dataset RAW: {DATASET_RAW}")
     print(f"Dataset SILVER: {DATASET_SILVER}")
-    print(f"Tabela de origem: {source_events_day}")
     print("=" * 100)
-
-    try:
-        bq.get_table(source_events_day)
-        print(f"Tabela de origem encontrada: {source_events_day}")
-    except NotFound:
-        print(f"Tabela de origem nao encontrada: {source_events_day}")
-        return
 
     print("Garantindo existencia das tabelas de destino...")
     ensure_tables_v2(bq)
+    ensure_duser_daily_backfill(bq)
     print("Tabelas validadas/criadas com sucesso")
 
-    print("Iniciando processamento do dia...")
-    process_day(bq, ga4, suffix)
-    print("Processamento principal concluido")
+    # A Data API não depende da exportação; uma falha nela é reportada no final,
+    # sem impedir o processamento dos eventos.
+    errors = []
+    print(f"Carregando GA4 Data API para {suffix_to_date(api_suffix)}...")
+    try:
+        load_data_api(bq, ga4, api_suffix)
+        print("Cargas da Data API concluidas")
+    except Exception as exc:
+        print(f"ERRO nas cargas da Data API: {exc!r}")
+        errors.append(f"Falha nas cargas da Data API para {api_suffix}: {exc!r}")
+
+    if RUN_DATE:
+        source_events_day = f"{PROJECT_ID}.{DATASET_RAW}.events_{RUN_DATE}"
+        if not table_exists(bq, source_events_day):
+            errors.append(f"Tabela de origem nao encontrada para RUN_DATE={RUN_DATE}: {source_events_day}")
+            raise RuntimeError("\n".join(errors))
+        days = [RUN_DATE]
+    else:
+        days = pending_days(bq, PENDING_LOOKBACK_DAYS)
+        print(f"Dias pendentes: {days or 'nenhum'}")
+
+    for suffix in days:
+        print(f"Processando {suffix_to_date(suffix)} (events_{suffix})...")
+        process_day(bq, suffix)
+        print(f"Dia {suffix_to_date(suffix)} concluido")
+
+    if not RUN_DATE:
+        errors.extend(check_missing_tables(bq, PENDING_LOOKBACK_DAYS))
+
+    if errors:
+        raise RuntimeError("Execucao concluida com erros:\n" + "\n".join(errors))
 
     print("Processamento finalizado com sucesso")
-    print(f"Data processada: {day_ref}")
-    print(f"Origem: {source_events_day}")
+    print(f"Dias processados: {[suffix_to_date(s) for s in days]}")
     print("Tabelas de destino:")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_GA4_EVENTS_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_FEVENTS_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_AG_MAIN_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_AG_CONT_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_V2}")
+    print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_DUSER_DIARIO_V2}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_BY_PAGE}")
     print(f"  {PROJECT_ID}.{DATASET_SILVER}.{T_USERS_ACTIVE_MONTH}")
+
+
+def main():
+    bq = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+    ga4 = BetaAnalyticsDataClient()
+    run(bq, ga4)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,14 @@ fEvents_v2           usuarios_ativos_v2
      └──► dUser_Company_v2
 ```
 
-O job é acionado diariamente e processa por padrão o dia anterior (horário de Brasília). A data pode ser sobrescrita via variável de ambiente `RUN_DATE`.
+O job é acionado diariamente (09:00, horário de Brasília) e é idempotente: pode rodar mais de uma vez para o mesmo dia sem alterar o resultado.
+
+- **Sem `RUN_DATE`**: carrega a GA4 Data API do dia anterior e processa, em ordem cronológica, todas as tabelas `events_AAAAMMDD` dos últimos `PENDING_LOOKBACK_DAYS` dias que ainda não foram carregadas (exportações que chegaram atrasadas). Tabelas `events_intraday_` são ignoradas.
+- **Com `RUN_DATE=AAAAMMDD`**: carrega a Data API e reprocessa apenas aquele dia. Se `events_AAAAMMDD` não existir, o job falha.
+
+Um dia é considerado carregado quando existe em `ga4_events_v2` **e** em `fEventos_Agregada_Conteudo_v2` (última tabela do processamento diário), de modo que um retry após falha no meio do processamento refaz o dia.
+
+Se uma tabela `events_` da janela não existir, o job registra um aviso e termina com sucesso enquanto o atraso for de até `MISSING_TABLE_ALERT_HOURS` horas após o fim do dia. Passado esse prazo, o job falha com erro explícito — mas só depois de concluir a Data API e os dias pendentes. Falhas da Data API também não impedem o processamento dos eventos e são reportadas como erro no final.
 
 ## Variáveis de ambiente
 
@@ -28,8 +35,10 @@ O job é acionado diariamente e processa por padrão o dia anterior (horário de
 | `DATASET_RAW` | Sim | Dataset BigQuery com os eventos brutos do GA4 |
 | `DATASET_SILVER` | Sim | Dataset BigQuery de destino (camada Silver) |
 | `GA4_PROPERTY_ID` | Sim | ID da propriedade GA4 (somente números) |
-| `RUN_DATE` | Não | Data de processamento no formato `YYYYMMDD`. Padrão: dia anterior |
+| `RUN_DATE` | Não | Reprocessa apenas este dia (`YYYYMMDD`). Padrão: dias pendentes |
 | `GA4_HOST` | Não | Host base para montar URLs de página. Padrão: `https://www.jota.info` |
+| `MISSING_TABLE_ALERT_HOURS` | Não | Horas após o fim do dia até a ausência de `events_` virar erro. Padrão: `48` |
+| `PENDING_LOOKBACK_DAYS` | Não | Janela (em dias, até ontem) para buscar dias pendentes e tabelas ausentes. Padrão: `14` |
 
 ## Tabelas
 
@@ -42,17 +51,14 @@ O job é acionado diariamente e processa por padrão o dia anterior (horário de
 | `fEventos_Agregada_Main_v2` | Contagem de eventos, usuários e sessões por dimensão | `data_evento` | `event_sk`, `traffic_sk`, `user_company` |
 | `fEventos_Agregada_Conteudo_v2` | Pageviews e leitores únicos por página | `data_evento` | `page_sk`, `traffic_sk` |
 | `dUser_Company_v2` | Dimensão de empresas dos usuários | — | — |
+| `dUser_Company_diario_v2` | Resumo por empresa e dia (eventos, último plano) usado para recalcular `dUser_Company_v2` sem ler todo o histórico | `data` | `user_company` |
 | `usuarios_ativos_v2` | Usuários ativos por dia (GA4 API) | `data` | — |
 | `usuarios_paginas_v2` | Usuários ativos e tempo médio por página (GA4 API) | `data` | `page_location` |
 | `usuarios_ativos_mensal_v2` | Usuários ativos por mês no formato `YYYYMM` (GA4 API) | — | — |
 
 ### Tabelas de staging (intermediárias)
 
-| Tabela | Descrição |
-|---|---|
-| `_stg_usuarios_ativos_v2` | Staging para carga da API antes do MERGE em `usuarios_ativos_v2` |
-| `_stg_usuarios_paginas_v2` | Staging para carga da API antes do MERGE em `usuarios_paginas_v2` |
-| `_stg_usuarios_ativos_mensal_v2` | Staging para carga da API antes do MERGE em `usuarios_ativos_mensal_v2` |
+Cada carga da Data API cria uma tabela temporária exclusiva `_tmp_<destino>_<uuid>` (por exemplo `_tmp_usuarios_ativos_v2_3f9c...`), com expiração automática de 6 horas, e a remove ao final. Execuções paralelas não compartilham estado. As antigas tabelas fixas `_stg_*` não são mais usadas pelo job (não foram removidas do BigQuery).
 
 ## Fluxo de processamento
 
@@ -69,14 +75,21 @@ Agrega contagem de eventos, usuários únicos (aproximado) e sessões por combin
 Filtra eventos `page_view` e agrega pageviews e leitores únicos por página, enriquecendo com atributos de empresa do usuário.
 
 ### 5. `fEvents_v2` → `dUser_Company_v2`
-Atualiza a dimensão de empresas via MERGE, mantendo histórico de primeira/última aparição e total de eventos acumulado.
+Executado logo após `fEvents_v2` e antes das agregadas, numa única transação:
+1. Regrava (DELETE + INSERT) a partição do dia em `dUser_Company_diario_v2`, lendo **apenas o dia** de `fEvents_v2`: uma linha por empresa com total de eventos, último plano preenchido e seu timestamp.
+2. Para as empresas presentes no dia (antes ou depois da regravação), recalcula em `dUser_Company_v2` a partir do resumo diário: `total_eventos_historicos` (`SUM`), `data_primeira_aparicao`/`data_ultima_aparicao` (`MIN`/`MAX`) e `plano_atual` (plano do evento mais recente com plano preenchido; mantém o valor atual se não houver).
+
+`tier_cliente`, `segmento_mercado` e `account_manager` não são alterados em empresas existentes.
+
+**Carga inicial:** se `dUser_Company_diario_v2` estiver vazia, o job a preenche uma única vez com todo o histórico de `fEvents_v2` e recalcula `dUser_Company_v2` inteira (corrigindo totais duplicados anteriores). A verificação usa `COUNT(*)` sem filtro, que não lê bytes.
 
 ### 6–8. GA4 Data API → tabelas de usuários ativos
-Para cada uma das três métricas (diária, por página, mensal), o padrão é:
+Executadas independentemente da existência de `events_`. Para cada uma das três métricas (diária, por página, mensal), o padrão é:
 1. Consulta a GA4 Data API
-2. Limpa a partição na tabela de staging
-3. Carrega os dados na staging via `load_table_from_json`
-4. Executa MERGE da staging na tabela final
+2. Cria uma tabela temporária exclusiva (sufixo uuid, expiração automática)
+3. Carrega os dados nela via `load_table_from_json`
+4. Executa MERGE na tabela final, deduplicando a origem com `QUALIFY ROW_NUMBER()`
+5. Remove a tabela temporária
 
 ## Estrutura do repositório
 
@@ -84,8 +97,12 @@ Para cada uma das três métricas (diária, por página, mensal), o padrão é:
 .
 ├── app/
 │   ├── requirements.txt
-│   └── src/
-│       └── main.py
+│   ├── requirements-dev.txt
+│   ├── src/
+│   │   └── main.py
+│   └── tests/
+│       ├── conftest.py
+│       └── test_main.py
 ├── cloudbuild.yaml
 ├── Dockerfile
 └── .dockerignore
@@ -114,6 +131,15 @@ docker run --rm \
   -e RUN_DATE=20250101 \
   -v "$HOME/.config/gcloud:/root/.config/gcloud" \
   bq-mirror-job
+```
+
+## Testes
+
+Os testes usam mocks e não acessam BigQuery, GA4 nem Cloud Run:
+
+```bash
+pip install -r app/requirements-dev.txt
+pytest app/tests -v
 ```
 
 ## Dependências

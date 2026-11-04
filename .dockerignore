@@ -2,3 +2,6 @@
 *.md
 .dockerignore
 cloudbuild.yaml
+app/tests
+app/requirements-dev.txt
+**/__pycache__
