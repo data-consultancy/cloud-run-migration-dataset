@@ -21,8 +21,19 @@ from backfill_ga4_dataapi.config import (
 # Com ±35 dias há até 5 candidatos de cada lado; usamos os 4 mais próximos.
 NEIGHBORS = 4
 NEIGHBOR_SEARCH_DAYS = 35
-# Feriados nacionais na janela: saem da baseline e são marcados no resultado.
-FERIADOS = {"2026-09-07", "2026-10-12", "2026-11-02", "2026-11-15", "2026-11-20"}
+# Dias atípicos: saem da baseline e são marcados no resultado (o desvio é esperado).
+# Eleições presidenciais movem muito o tráfego de um site de notícias (dia e dia seguinte).
+DIAS_ATIPICOS = {
+    "2026-09-07": "feriado (Independência)",
+    "2026-10-04": "eleição 1º turno",
+    "2026-10-05": "dia seguinte ao 1º turno",
+    "2026-10-12": "feriado (N. Sra. Aparecida)",
+    "2026-10-25": "eleição 2º turno",
+    "2026-10-26": "dia seguinte ao 2º turno",
+    "2026-11-02": "feriado (Finados)",
+    "2026-11-15": "feriado (Proclamação da República)",
+    "2026-11-20": "feriado (Consciência Negra)",
+}
 
 # métrica -> (tabela atual, tabela de staging, coluna de data, expressão)
 METRICS = {
@@ -95,25 +106,58 @@ def compare_control(bq: bigquery.Client, control_dates, tables, log: bqh.RunLog)
                    COALESCE(a.total_eventos, 0) - COALESCE(r.total_eventos, 0) AS diferenca
             FROM (SELECT * FROM `{T_STG_DUSER_DIARIO}` WHERE data = DATE '{d}') a
             FULL OUTER JOIN (SELECT * FROM `{T_DUSER_DIARIO}` WHERE data = DATE '{d}') r USING (user_company)
+            WHERE COALESCE(a.total_eventos, 0) != COALESCE(r.total_eventos, 0)
             ORDER BY ABS(COALESCE(a.total_eventos, 0) - COALESCE(r.total_eventos, 0)) DESC
             LIMIT 5
             """)
             log.add("validacao_controle:duser.maiores_diferencas", data=d, totais=top)
-            lines.append((d, "duser.maiores_diferencas", top))
+            lines.append((d, "duser.maiores_diferencas" + ("" if top else ": nenhuma diferença"), top))
+
+    if "main" in tables:
+        for d in control_dates:
+            top = bqh.rows(bq, paid_sessions_breakdown_sql(d))
+            log.add("validacao_controle:sessoes_pagas.diferencas", data=d, totais=top)
+            lines.append((d, "sessoes_pagas.diferencas por source/medium/campaign"
+                          + ("" if top else ": nenhuma diferença"), top))
     return lines
 
 
+def paid_sessions_breakdown_sql(d: str) -> str:
+    """Sessões pagas por source/medium/campaign, API (staging) x atual, só onde diferem."""
+    def side(main_table: str, dim: str) -> str:
+        return f"""
+        SELECT COALESCE(t.source, '(null)') AS source, COALESCE(t.medium, '(null)') AS medium,
+               COALESCE(t.campaign, '(null)') AS campaign, SUM(m.total_sessoes) AS sessoes
+        FROM `{main_table}` m
+        JOIN ({dim}) t USING (traffic_sk)
+        WHERE t.traffic_group = 'Paid' AND m.data_evento = DATE '{d}'
+        GROUP BY 1, 2, 3"""
+
+    dim_atual = f"SELECT traffic_sk, source, medium, campaign, traffic_group FROM `{T_DIM_TRAFEGO}`"
+    dim_api = dim_atual + f" UNION ALL SELECT traffic_sk, source, medium, campaign, traffic_group FROM `{T_STG_TRAFEGO}`"
+    return f"""
+    WITH api AS ({side(T_STG_MAIN, dim_api)}),
+         atual AS ({side(T_MAIN, dim_atual)})
+    SELECT source, medium, campaign, api.sessoes AS api, atual.sessoes AS atual,
+           COALESCE(api.sessoes, 0) - COALESCE(atual.sessoes, 0) AS diferenca
+    FROM api FULL OUTER JOIN atual USING (source, medium, campaign)
+    WHERE COALESCE(api.sessoes, 0) != COALESCE(atual.sessoes, 0)
+    ORDER BY ABS(COALESCE(api.sessoes, 0) - COALESCE(atual.sessoes, 0)) DESC, source, medium, campaign
+    LIMIT 15
+    """
+
+
 def nearest_neighbors(target: str, candidates) -> list:
-    """Dias mais próximos com o mesmo dia da semana do alvo, sem feriados."""
+    """Dias mais próximos com o mesmo dia da semana do alvo, sem feriados nem eleições."""
     day = datetime.date.fromisoformat(target)
     same_weekday = [c for c in candidates
-                    if c not in FERIADOS and datetime.date.fromisoformat(c).weekday() == day.weekday()]
+                    if c not in DIAS_ATIPICOS and datetime.date.fromisoformat(c).weekday() == day.weekday()]
     ordered = sorted(same_weekday, key=lambda c: (abs((datetime.date.fromisoformat(c) - day).days), c))
     return ordered[:NEIGHBORS]
 
 
 def compare_neighbors(bq: bigquery.Client, backfill_dates, tables, log: bqh.RunLog) -> list:
-    """Totais de cada data do backfill ao lado da mediana dos vizinhos (mesmo dia da semana, sem feriados) com dados reais."""
+    """Totais de cada data do backfill ao lado da mediana dos vizinhos (mesmo dia da semana, sem dias atípicos) com dados reais."""
     lines = []
     first = min(datetime.date.fromisoformat(d) for d in backfill_dates) - datetime.timedelta(days=NEIGHBOR_SEARCH_DAYS)
     last = max(datetime.date.fromisoformat(d) for d in backfill_dates) + datetime.timedelta(days=NEIGHBOR_SEARCH_DAYS)
@@ -127,9 +171,10 @@ def compare_neighbors(bq: bigquery.Client, backfill_dates, tables, log: bqh.RunL
             neighbors = nearest_neighbors(d, real.keys())
             median = statistics.median([real[n] for n in neighbors]) if neighbors else None
             row = {"backfill": api.get(d), "mediana_vizinhos": median,
-                   "diferenca_pct": _pct(api.get(d), median), "vizinhos": neighbors}
-            if d in FERIADOS:
-                row["feriado"] = True  # a baseline é de dias comuns: queda esperada
+                   "diferenca_pct": _pct(api.get(d), median),
+                   "vizinhos": {n: real[n] for n in neighbors}}
+            if d in DIAS_ATIPICOS:
+                row["dia_atipico"] = DIAS_ATIPICOS[d]  # a baseline é de dias comuns: desvio esperado
             lines.append((d, metric, row))
             log.add(f"validacao_vizinhos:{metric}", data=d, totais=row)
     return lines
@@ -143,6 +188,9 @@ def print_lines(title: str, lines) -> None:
         if isinstance(row, dict):
             shown = {k: v for k, v in row.items() if k != "vizinhos"}
             print(f"{d}  {metric:<32} {shown}")
+            if row.get("vizinhos"):
+                refs = ", ".join(f"{n}={v}" for n, v in row["vizinhos"].items())
+                print(f"{'':12}{'referência:':<32} {refs}")
         else:
             print(f"{d}  {metric}")
             for item in row:

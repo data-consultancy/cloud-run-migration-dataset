@@ -55,7 +55,7 @@ As tabelas `usuarios_ativos_v2`, `usuarios_ativos_mensal_v2` e `usuarios_paginas
    - sessões pagas.
 
    Também lista as 5 empresas com maior diferença.
-2. **Datas do backfill:** os totais de cada data ao lado da mediana dos 4 dias mais próximos com o mesmo dia da semana e dados reais (feriados ficam fora da baseline e são marcados com `feriado`).
+2. **Datas do backfill:** os totais de cada data ao lado da mediana dos 4 dias mais próximos com o mesmo dia da semana e dados reais (feriados e dias de eleição ficam fora da baseline e são marcados com `dia_atipico`).
 3. **Registro:** tudo vai para `_backfill_dataapi_log` e para os logs da execução no Cloud Run.
 
 ## Como rodar

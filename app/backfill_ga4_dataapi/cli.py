@@ -210,7 +210,7 @@ def dry_run(bq, ga4, args, log: bqh.RunLog) -> None:
 
     validate.print_lines("Dias de controle: API x tabelas atuais",
                          validate.compare_control(bq, args.control_dates, args.tables, log))
-    validate.print_lines("Datas do backfill x mediana dos vizinhos (mesmo dia da semana, sem feriados)",
+    validate.print_lines("Datas do backfill x mediana dos vizinhos (mesmo dia da semana, sem feriados e eleições)",
                          validate.compare_neighbors(bq, args.dates, args.tables, log))
 
     if "sessoes" in args.tables:

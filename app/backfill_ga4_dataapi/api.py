@@ -139,6 +139,11 @@ def fetch_report(client: BetaAnalyticsDataClient, spec: ReportSpec, date: str) -
             result.observacoes.add("subject_to_thresholding")
         if len(metadata.sampling_metadatas):
             result.observacoes.add("amostrado")
+            # Fração da base lida pela amostra (ex.: 12.5% = só 1/8 dos eventos foi lido e o resto é estimado)
+            for sm in metadata.sampling_metadatas:
+                if sm.sampling_space_size:
+                    pct = 100 * sm.samples_read_count / sm.sampling_space_size
+                    result.observacoes.add(f"amostra={pct:.1f}% de {sm.sampling_space_size} eventos")
 
         quota = response.property_quota
         if quota:

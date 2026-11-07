@@ -380,3 +380,42 @@ def test_execute_sem_dry_run_aborta():
     bq = FakeBQ()
     with pytest.raises(RuntimeError, match="Nenhum dry-run"):
         cli.main(["--execute", "--dates", "2026-10-04"], bq=bq)
+
+
+def test_fetch_report_registra_percentual_da_amostra():
+    from google.analytics.data_v1beta.types import SamplingMetadata
+    resp = api_response([(["20261004", "ACME", "Pro"], [10])])
+    resp.metadata.sampling_metadatas.append(SamplingMetadata(samples_read_count=125, sampling_space_size=1000))
+    client = MagicMock()
+    client.run_report.return_value = resp
+    result = api.fetch_report(client, api.REPORTS["duser"], "2026-10-04")
+    assert "amostrado" in result.observacoes
+    assert "amostra=12.5% de 1000 eventos" in result.observacoes
+
+
+def test_breakdown_sessoes_pagas_compara_api_e_atual_por_campanha():
+    from backfill_ga4_dataapi import validate
+    sql = validate.paid_sessions_breakdown_sql("2026-10-20")
+    assert f"FROM `{config.T_STG_MAIN}`" in sql and f"FROM `{config.T_MAIN}`" in sql
+    assert "FULL OUTER JOIN atual USING (source, medium, campaign)" in sql
+    assert sql.count("traffic_group = 'Paid'") == 2
+    assert sql.count("DATE '2026-10-20'") == 2
+    # a dimensão de staging só entra no lado da API
+    atual = sql.split("atual AS (")[1]
+    assert config.T_STG_TRAFEGO not in atual
+
+
+def test_maiores_diferencas_do_duser_ignora_empresas_sem_diferenca():
+    from backfill_ga4_dataapi import validate
+    bq = FakeBQ()
+    validate.compare_control(bq, ["2026-10-20"], ["duser"], MagicMock())
+    sql = next(s for s in bq.sql if "FULL OUTER JOIN" in s and "user_company" in s)
+    assert "WHERE COALESCE(a.total_eventos, 0) != COALESCE(r.total_eventos, 0)" in sql
+
+
+def test_domingo_do_2o_turno_nao_entra_na_referencia():
+    from backfill_ga4_dataapi import validate
+    # 2026-11-01 (dom): o domingo mais próximo com dados é 10-25 (2º turno), que deve ficar de fora
+    candidates = ["2026-10-25", "2026-10-18", "2026-10-11", "2026-09-27", "2026-09-20"]
+    assert validate.nearest_neighbors("2026-11-01", candidates) == ["2026-10-18", "2026-10-11", "2026-09-27", "2026-09-20"]
+    assert validate.DIAS_ATIPICOS["2026-10-04"] == "eleição 1º turno"
