@@ -138,11 +138,12 @@ def paid_sessions_breakdown_sql(d: str) -> str:
     return f"""
     WITH api AS ({side(T_STG_MAIN, dim_api)}),
          atual AS ({side(T_MAIN, dim_atual)})
-    SELECT source, medium, campaign, api.sessoes AS api, atual.sessoes AS atual,
-           COALESCE(api.sessoes, 0) - COALESCE(atual.sessoes, 0) AS diferenca
-    FROM api FULL OUTER JOIN atual USING (source, medium, campaign)
-    WHERE COALESCE(api.sessoes, 0) != COALESCE(atual.sessoes, 0)
-    ORDER BY ABS(COALESCE(api.sessoes, 0) - COALESCE(atual.sessoes, 0)) DESC, source, medium, campaign
+    -- Aliases a/r: no ORDER BY, "api"/"atual" seriam as colunas de saída (INT64), não as CTEs.
+    SELECT source, medium, campaign, a.sessoes AS api, r.sessoes AS atual,
+           COALESCE(a.sessoes, 0) - COALESCE(r.sessoes, 0) AS diferenca
+    FROM api a FULL OUTER JOIN atual r USING (source, medium, campaign)
+    WHERE COALESCE(a.sessoes, 0) != COALESCE(r.sessoes, 0)
+    ORDER BY ABS(diferenca) DESC, source, medium, campaign
     LIMIT 15
     """
 

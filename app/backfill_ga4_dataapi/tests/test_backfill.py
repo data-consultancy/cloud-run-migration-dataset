@@ -397,7 +397,9 @@ def test_breakdown_sessoes_pagas_compara_api_e_atual_por_campanha():
     from backfill_ga4_dataapi import validate
     sql = validate.paid_sessions_breakdown_sql("2026-10-20")
     assert f"FROM `{config.T_STG_MAIN}`" in sql and f"FROM `{config.T_MAIN}`" in sql
-    assert "FULL OUTER JOIN atual USING (source, medium, campaign)" in sql
+    assert "FROM api a FULL OUTER JOIN atual r USING (source, medium, campaign)" in sql
+    # no ORDER BY, "api." apontaria para a coluna de saída INT64 (erro 400 no BigQuery)
+    assert "api.sessoes" not in sql and "atual.sessoes" not in sql
     assert sql.count("traffic_group = 'Paid'") == 2
     assert sql.count("DATE '2026-10-20'") == 2
     # a dimensão de staging só entra no lado da API
