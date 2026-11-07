@@ -1,3 +1,4 @@
+import datetime
 import re
 import sys
 from unittest.mock import MagicMock
@@ -293,14 +294,15 @@ def test_dry_run_aborta_antes_da_api_se_data_existe_na_raw():
     ga4.run_report.assert_not_called()
 
 
-def execute_bq(other=0, staging_rows=True):
+def execute_bq(other=0, staging_rows=True, observacoes=None):
     def counts(sql):
         if config.T_GA4_EVENTS in sql:  # a trava continua vendo ga4_events_v2 vazia
             return []
         return [{"d": d, "n": 10} for d in config.BACKFILL_DATES if f"DATE '{d}'" in sql]
 
     responses = {
-        "STARTS_WITH(tabela, 'api:')": [{"run_id": "dry1", "d": "2026-10-04", "tabela": "api:main", "linhas_other": other}],
+        "STARTS_WITH(tabela, 'api:')": [{"run_id": "dry1", "d": "2026-10-04", "tabela": "api:main",
+                                         "linhas_other": other, "observacoes": observacoes}],
         "JOBS_BY_PROJECT": [],
         "SELECT COUNT(*) AS n FROM": [{"n": 2}],
     }
@@ -338,6 +340,33 @@ def test_execute_grava_por_data_em_transacao_sem_chamar_api(monkeypatch):
 def test_execute_aborta_com_other_sem_allow_other():
     with pytest.raises(RuntimeError, match=r"\(other\)"):
         cli.main(["--execute", "--dates", "2026-10-04"], bq=execute_bq(other=4))
+
+
+def test_execute_aborta_com_amostragem_sem_allow_sampled():
+    bq = execute_bq(observacoes="amostrado; subject_to_thresholding")
+    with pytest.raises(RuntimeError, match="amostradas"):
+        cli.main(["--execute", "--dates", "2026-10-04"], bq=bq)
+    assert bq.writes_to(config.T_MAIN) == []
+
+
+def test_execute_com_allow_sampled_passa_da_trava(monkeypatch):
+    mirror = sys.modules.get("main")
+    if mirror is not None:
+        monkeypatch.setattr(mirror, "PROJECT_ID", config.PROJECT_ID)
+        monkeypatch.setattr(mirror, "DATASET_SILVER", config.DATASET_GA4)
+    bq = execute_bq(observacoes="amostrado")
+    cli.main(["--execute", "--allow-sampled", "--dates", "2026-10-04"], bq=bq, ga4=fake_ga4())
+    assert bq.writes_to(config.T_MAIN)
+
+
+def test_vizinhos_sao_do_mesmo_dia_da_semana_sem_feriados():
+    from backfill_ga4_dataapi import validate
+    # 2026-11-02 (seg, Finados) é alvo; candidatos: segundas, um sábado e o feriado 10-12 (seg)
+    candidates = ["2026-10-12", "2026-10-19", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30",
+                  "2026-11-07", "2026-11-03"]
+    viz = validate.nearest_neighbors("2026-11-02", candidates)
+    assert viz == ["2026-11-09", "2026-10-19", "2026-11-16", "2026-11-23"]
+    assert all(datetime.date.fromisoformat(v).weekday() == 0 for v in viz)
 
 
 def test_execute_aborta_sem_staging():

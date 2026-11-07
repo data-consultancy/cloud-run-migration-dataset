@@ -80,6 +80,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Busca o relatório de conteúdo sem source/medium/campaign (usar se houver (other)).")
     parser.add_argument("--allow-other", action="store_true",
                         help="Permite --execute mesmo com linhas (other) no último dry-run.")
+    parser.add_argument("--allow-sampled", action="store_true",
+                        help="Permite --execute mesmo com respostas amostradas da API no último dry-run.")
     args = parser.parse_args(argv)
 
     args.dates = _split(args.dates)
@@ -208,7 +210,7 @@ def dry_run(bq, ga4, args, log: bqh.RunLog) -> None:
 
     validate.print_lines("Dias de controle: API x tabelas atuais",
                          validate.compare_control(bq, args.control_dates, args.tables, log))
-    validate.print_lines("Datas do backfill x mediana dos 7 vizinhos com dados reais",
+    validate.print_lines("Datas do backfill x mediana dos vizinhos (mesmo dia da semana, sem feriados)",
                          validate.compare_neighbors(bq, args.dates, args.tables, log))
 
     if "sessoes" in args.tables:
@@ -235,10 +237,11 @@ def _require_staging(bq, table: str, col: str, dates, name: str) -> None:
         raise RuntimeError(f"Staging de {name} sem linhas para {missing}. Rode o dry-run antes do --execute.")
 
 
-def _check_other(bq, dates, allow_other: bool) -> str:
+def _check_other(bq, dates, allow_other: bool, allow_sampled: bool = False) -> str:
     latest = bqh.rows(bq, f"""
     SELECT run_id, FORMAT_DATE('%Y-%m-%d', data) AS d, tabela,
-           CAST(JSON_VALUE(totais, '$.linhas_other') AS INT64) AS linhas_other
+           CAST(JSON_VALUE(totais, '$.linhas_other') AS INT64) AS linhas_other,
+           observacoes
     FROM `{T_LOG}`
     WHERE modo = 'dry-run' AND STARTS_WITH(tabela, 'api:') AND data IN ({bqh.dates_sql(dates)})
     QUALIFY ROW_NUMBER() OVER (PARTITION BY data, tabela ORDER BY executado_em DESC) = 1
@@ -249,6 +252,11 @@ def _check_other(bq, dates, allow_other: bool) -> str:
     if with_other and not allow_other:
         raise RuntimeError("O último dry-run teve linhas (other):\n  " + "\n  ".join(with_other)
                            + "\nUse --conteudo-sem-trafego no dry-run ou --allow-other para aceitar.")
+    sampled = [f"{r['d']} {r['tabela']}" for r in latest if "amostrado" in (r.get("observacoes") or "")]
+    if sampled and not allow_sampled:
+        raise RuntimeError("O último dry-run teve respostas amostradas da API (distribuição por dimensão estimada):\n  "
+                           + "\n  ".join(sampled)
+                           + "\nTire essas datas de --dates ou use --allow-sampled para aceitar.")
     return ", ".join(sorted({r["run_id"] for r in latest}))
 
 
@@ -291,7 +299,7 @@ def duser_script(mirror, dates) -> str:
 
 def execute(bq, args, log: bqh.RunLog) -> None:
     dates, tables = args.dates, args.tables
-    base = _check_other(bq, dates, args.allow_other)
+    base = _check_other(bq, dates, args.allow_other, args.allow_sampled)
     print(f"Gravando a partir da staging do dry-run {base}")
 
     if "main" in tables:

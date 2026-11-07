@@ -42,6 +42,7 @@ As tabelas `usuarios_ativos_v2`, `usuarios_ativos_mensal_v2` e `usuarios_paginas
   - faltar staging para alguma data;
   - não houver dry-run no log;
   - o último dry-run tiver linhas `(other)`, a menos que se passe `--allow-other`.
+  - o último dry-run tiver respostas amostradas da API (`amostrado` no log), a menos que se passe `--allow-sampled`.
 - **Idempotência:** cada data é gravada com `DELETE` daquela data seguido de `INSERT`, dentro de `BEGIN TRANSACTION ... COMMIT TRANSACTION`. Pode ser reexecutado sem duplicar.
 
 ## Validação (feita no dry-run)
@@ -54,7 +55,7 @@ As tabelas `usuarios_ativos_v2`, `usuarios_ativos_mensal_v2` e `usuarios_paginas
    - sessões pagas.
 
    Também lista as 5 empresas com maior diferença.
-2. **Datas do backfill:** os totais de cada data ao lado da mediana dos 7 dias vizinhos com dados reais.
+2. **Datas do backfill:** os totais de cada data ao lado da mediana dos 4 dias mais próximos com o mesmo dia da semana e dados reais (feriados ficam fora da baseline e são marcados com `feriado`).
 3. **Registro:** tudo vai para `_backfill_dataapi_log` e para os logs da execução no Cloud Run.
 
 ## Como rodar

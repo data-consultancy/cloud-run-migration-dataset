@@ -17,8 +17,12 @@ from backfill_ga4_dataapi.config import (
     T_STG_TRAFEGO,
 )
 
-NEIGHBORS = 7
-NEIGHBOR_SEARCH_DAYS = 30
+# Vizinhos = mesmo dia da semana, para fim de semana não ser comparado com dia útil.
+# Com ±35 dias há até 5 candidatos de cada lado; usamos os 4 mais próximos.
+NEIGHBORS = 4
+NEIGHBOR_SEARCH_DAYS = 35
+# Feriados nacionais na janela: saem da baseline e são marcados no resultado.
+FERIADOS = {"2026-09-07", "2026-10-12", "2026-11-02", "2026-11-15", "2026-11-20"}
 
 # métrica -> (tabela atual, tabela de staging, coluna de data, expressão)
 METRICS = {
@@ -100,13 +104,16 @@ def compare_control(bq: bigquery.Client, control_dates, tables, log: bqh.RunLog)
 
 
 def nearest_neighbors(target: str, candidates) -> list:
+    """Dias mais próximos com o mesmo dia da semana do alvo, sem feriados."""
     day = datetime.date.fromisoformat(target)
-    ordered = sorted(candidates, key=lambda c: (abs((datetime.date.fromisoformat(c) - day).days), c))
+    same_weekday = [c for c in candidates
+                    if c not in FERIADOS and datetime.date.fromisoformat(c).weekday() == day.weekday()]
+    ordered = sorted(same_weekday, key=lambda c: (abs((datetime.date.fromisoformat(c) - day).days), c))
     return ordered[:NEIGHBORS]
 
 
 def compare_neighbors(bq: bigquery.Client, backfill_dates, tables, log: bqh.RunLog) -> list:
-    """Totais de cada data do backfill ao lado da mediana dos 7 dias vizinhos com dados reais."""
+    """Totais de cada data do backfill ao lado da mediana dos vizinhos (mesmo dia da semana, sem feriados) com dados reais."""
     lines = []
     first = min(datetime.date.fromisoformat(d) for d in backfill_dates) - datetime.timedelta(days=NEIGHBOR_SEARCH_DAYS)
     last = max(datetime.date.fromisoformat(d) for d in backfill_dates) + datetime.timedelta(days=NEIGHBOR_SEARCH_DAYS)
@@ -121,6 +128,8 @@ def compare_neighbors(bq: bigquery.Client, backfill_dates, tables, log: bqh.RunL
             median = statistics.median([real[n] for n in neighbors]) if neighbors else None
             row = {"backfill": api.get(d), "mediana_vizinhos": median,
                    "diferenca_pct": _pct(api.get(d), median), "vizinhos": neighbors}
+            if d in FERIADOS:
+                row["feriado"] = True  # a baseline é de dias comuns: queda esperada
             lines.append((d, metric, row))
             log.add(f"validacao_vizinhos:{metric}", data=d, totais=row)
     return lines
