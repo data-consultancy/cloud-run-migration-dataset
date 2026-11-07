@@ -153,8 +153,8 @@ def test_sem_carga_inicial_quando_resumo_diario_preenchido():
 @pytest.mark.parametrize("func, getter, rows", [
     ("upsert_active_users_api", "get_active_users_per_day",
      [{"data": "2026-11-01", "usuarios_ativos": 10}]),
-    ("upsert_total_users_by_page_api", "get_active_users_per_page",
-     [{"data": "2026-11-01", "page_location": "https://x/a", "usuarios_ativos": 3, "page_time": "5s"}]),
+    ("upsert_total_users_by_page_api", "iter_active_users_per_page",
+     [[{"data": "2026-11-01", "page_location": "https://x/a", "usuarios_ativos": 3, "page_time": "5s"}]]),
     ("upsert_active_users_monthly_api", "get_active_users_per_month",
      [{"data": "202611", "usuarios_ativos": 99}]),
 ])
@@ -191,8 +191,8 @@ def test_staging_exclusiva_por_execucao(monkeypatch, func, getter, rows):
 @pytest.mark.parametrize("func, getter, rows", [
     ("upsert_active_users_api", "get_active_users_per_day",
      [{"data": "2026-11-01", "usuarios_ativos": 10}]),
-    ("upsert_total_users_by_page_api", "get_active_users_per_page",
-     [{"data": "2026-11-01", "page_location": "https://x/a", "usuarios_ativos": 3, "page_time": "5s"}]),
+    ("upsert_total_users_by_page_api", "iter_active_users_per_page",
+     [[{"data": "2026-11-01", "page_location": "https://x/a", "usuarios_ativos": 3, "page_time": "5s"}]]),
 ])
 def test_merge_diario_le_so_a_particao_do_dia_no_destino(monkeypatch, func, getter, rows):
     monkeypatch.setattr(main, "GA4_PROPERTY_ID", "123")
@@ -212,6 +212,54 @@ def test_staging_removida_mesmo_se_merge_falhar(monkeypatch):
     with pytest.raises(RuntimeError):
         main.upsert_active_users_api(bq, MagicMock(), "20261101")
     bq.delete_table.assert_called_once()
+
+
+def test_usuarios_por_pagina_carrega_cada_pagina_sem_acumular(monkeypatch):
+    monkeypatch.setattr(main, "GA4_PROPERTY_ID", "123")
+    batches = [
+        [{"data": "2026-11-01", "page_location": f"https://x/{i}", "usuarios_ativos": 1, "page_time": "1s"} for i in range(3)],
+        [{"data": "2026-11-01", "page_location": "https://x/z", "usuarios_ativos": 2, "page_time": "2s"}],
+    ]
+    monkeypatch.setattr(main, "iter_active_users_per_page", lambda *a, **k: iter(batches))
+    bq = fake_bq()
+    main.upsert_total_users_by_page_api(bq, MagicMock(), "20261101")
+
+    bq.create_table.assert_called_once()
+    loads = bq.load_table_from_json.call_args_list
+    assert [len(c.args[0]) for c in loads] == [3, 1]
+    staging = bq.create_table.call_args.args[0].table_id
+    assert all(c.args[1].endswith(staging) for c in loads)
+    assert len([s for s in executed_sql(bq) if "MERGE" in s]) == 1
+    bq.delete_table.assert_called_once()
+
+
+def test_usuarios_por_pagina_sem_linhas_nao_cria_staging(monkeypatch):
+    monkeypatch.setattr(main, "GA4_PROPERTY_ID", "123")
+    monkeypatch.setattr(main, "iter_active_users_per_page", lambda *a, **k: iter([]))
+    bq = fake_bq()
+    main.upsert_total_users_by_page_api(bq, MagicMock(), "20261101")
+    bq.create_table.assert_not_called()
+    bq.delete_table.assert_not_called()
+
+
+def test_iter_usuarios_por_pagina_pagina_a_api(monkeypatch):
+    monkeypatch.setattr(main, "USERS_BY_PAGE_PAGE_SIZE", 2)
+
+    def row(path):
+        r = MagicMock()
+        r.dimension_values = [MagicMock(value="20261101"), MagicMock(value=path)]
+        r.metric_values = [MagicMock(value="2"), MagicMock(value="130")]
+        return r
+
+    pages = [[row("/a"), row("/b")], [row("/c")]]
+    ga4 = MagicMock()
+    ga4.run_report.side_effect = [MagicMock(rows=p) for p in pages]
+
+    batches = list(main.iter_active_users_per_page(ga4, "123", "2026-11-01", "2026-11-01"))
+    assert [len(b) for b in batches] == [2, 1]
+    assert batches[1][0]["page_location"] == "https://www.jota.info/c"
+    assert batches[0][0]["page_time"] == "1min 05s"
+    assert [c.args[0].offset for c in ga4.run_report.call_args_list] == [0, 2]
 
 
 def test_ensure_tables_nao_cria_mais_staging_fixa():

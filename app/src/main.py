@@ -118,12 +118,21 @@ def format_engagement_time(seconds: float) -> str:
     return f"{total_seconds}s"
 
 
-def get_active_users_per_page(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
-    limit = 100000
+USERS_BY_PAGE_PAGE_SIZE = 50000
+
+
+def iter_active_users_per_page(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
+    """Gera um lote de linhas por página da Data API.
+
+    Não acumula o dia inteiro em memória: um dia pode ter centenas de milhares de
+    páginas distintas e a lista completa (+ serialização JSON no load) estourava a
+    memória do container.
+    """
+    limit = USERS_BY_PAGE_PAGE_SIZE
     offset = 0
-    result = []
 
     while True:
+        batch = []
         request = RunReportRequest(
             property=f"properties/{property_id}",
             dimensions=[
@@ -155,19 +164,21 @@ def get_active_users_per_page(ga4: BetaAnalyticsDataClient, property_id: str, st
             else:
                 page_time = "0s"
 
-            result.append({
+            batch.append({
                 "data": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
                 "page_location": page_location,
                 "usuarios_ativos": usuarios_ativos,
                 "page_time": page_time,
             })
 
-        if len(response.rows) < limit:
+        last_page = len(response.rows) < limit
+        del response
+        yield batch
+
+        if last_page:
             break
 
         offset += limit
-
-    return result
 
 
 def get_active_users_per_month(ga4: BetaAnalyticsDataClient, property_id: str, start_date: str, end_date: str):
@@ -381,15 +392,24 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, ga4: BetaAnalyticsDataCl
     start_date = suffix_to_date(suffix)
     end_date = start_date
 
-    rows = get_active_users_per_page(ga4, property_id=GA4_PROPERTY_ID, start_date=start_date, end_date=end_date)
-
-    if not rows:
-        print(f"Nenhum registro de usuários por página retornado pela API para {start_date}")
-        return
-
-    staging_table = create_temp_table(bq, T_TMP_USERS_BY_PAGE, SCHEMA_USERS_BY_PAGE)
+    staging_table = None
     try:
-        load_rows(bq, staging_table, SCHEMA_USERS_BY_PAGE, rows)
+        # Cada página da API é carregada na staging antes de buscar a próxima,
+        # mantendo em memória só um lote por vez.
+        total_rows = 0
+        for batch in iter_active_users_per_page(ga4, property_id=GA4_PROPERTY_ID, start_date=start_date, end_date=end_date):
+            if not batch:
+                continue
+            if staging_table is None:
+                staging_table = create_temp_table(bq, T_TMP_USERS_BY_PAGE, SCHEMA_USERS_BY_PAGE)
+            load_rows(bq, staging_table, SCHEMA_USERS_BY_PAGE, batch)
+            total_rows += len(batch)
+            del batch
+
+        if staging_table is None:
+            print(f"Nenhum registro de usuários por página retornado pela API para {start_date}")
+            return
+        print(f"Usuarios por pagina: {total_rows} linhas carregadas na staging para {start_date}")
 
         # page_location nulo é comparado via COALESCE para que reexecuções não insiram a linha de novo.
         # O filtro constante em T.data faz o MERGE ler só a partição do dia no destino.
@@ -426,7 +446,8 @@ def upsert_total_users_by_page_api(bq: bigquery.Client, ga4: BetaAnalyticsDataCl
           VALUES (S.data, S.page_location, S.page_sk, S.usuarios_ativos, S.page_time);
         """)
     finally:
-        bq.delete_table(staging_table, not_found_ok=True)
+        if staging_table is not None:
+            bq.delete_table(staging_table, not_found_ok=True)
 
 
 def upsert_active_users_monthly_api(bq: bigquery.Client, ga4: BetaAnalyticsDataClient, suffix: str) -> None:
