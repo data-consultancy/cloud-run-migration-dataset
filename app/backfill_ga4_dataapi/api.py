@@ -85,6 +85,10 @@ class ReportResult:
 def _clean(api_name: str, value: str):
     if value == NOT_SET:
         return None
+    # A Data API devolve '' para parâmetros JOTA_* enviados vazios; a produção (export) nunca tem
+    # user_company = '' e trata a ausência como NULL (no controle, '' era 100% da diferença do duser).
+    if value == "" and api_name.startswith("customEvent:JOTA_"):
+        return None
     if api_name == "date":
         return f"{value[:4]}-{value[4:6]}-{value[6:8]}"
     return value

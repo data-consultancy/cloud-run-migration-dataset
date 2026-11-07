@@ -159,6 +159,14 @@ def test_fetch_report_pagina_converte_not_set_e_registra_other(monkeypatch):
     assert result.tokens_dia_restantes == 1990
 
 
+def test_clean_converte_jota_vazio_em_null_e_preserva_outras_dimensoes():
+    assert api._clean("customEvent:JOTA_COMPANY", "") is None
+    assert api._clean("customEvent:JOTA_Planos", "") is None
+    assert api._clean("customEvent:JOTA_COMPANY", "ACME") == "ACME"
+    # fora das dimensões JOTA_*, '' segue como veio (source/medium têm COALESCE próprio)
+    assert api._clean("customEvent:source", "") == ""
+
+
 def test_relatorio_de_conteudo_filtra_page_view_e_respeita_9_dimensoes():
     request = api._request(api.REPORTS["conteudo"], "2026-10-04", 0)
     assert request.dimension_filter.filter.field_name == "eventName"
@@ -266,8 +274,10 @@ def test_dry_run_nao_grava_nas_tabelas_finais():
     loaded = {t for t, _ in bq.loads}
     assert {config.T_RAW_MAIN, config.T_RAW_CONTEUDO, config.T_RAW_DUSER, config.T_LOG} <= loaded
     # Dias de controle também buscados, apenas para staging
-    raw_main = next(rows for t, rows in bq.loads if t == config.T_RAW_MAIN)
-    assert {r["data"] for r in raw_main} == {"2026-10-04", "2026-10-12", "2026-10-20", "2026-10-26"}
+    # Uma carga por dia (não acumula todas as datas em memória)
+    raw_main_loads = [rows for t, rows in bq.loads if t == config.T_RAW_MAIN]
+    assert [{r["data"] for r in rows} for rows in raw_main_loads] == [
+        {"2026-10-04"}, {"2026-10-12"}, {"2026-10-20"}, {"2026-10-26"}]
     assert bq.writes_to(config.T_STG_MAIN) and bq.writes_to(config.T_STG_TRAFEGO)
     log_rows = next(rows for t, rows in bq.loads if t == config.T_LOG)
     assert {r["modo"] for r in log_rows} == {"dry-run"}

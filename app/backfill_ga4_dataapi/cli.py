@@ -147,10 +147,11 @@ def _counts(bq: bigquery.Client, table: str, col: str, dates) -> dict:
 def fetch_reports(bq, ga4, reports, dates, sem_trafego: bool, log: bqh.RunLog) -> None:
     for report in sorted(reports):
         spec = api.REPORTS["conteudo_sem_trafego" if report == "conteudo" and sem_trafego else report]
-        all_rows = []
+        # Carrega um dia por vez: acumular todas as datas em memória estourava o container.
+        staging.clear_raw(bq, report, dates)
         for d in dates:
             result = api.fetch_report(ga4, spec, d)
-            all_rows.extend(result.rows)
+            staging.append_raw(bq, report, result.rows)
             totais = {
                 "eventos": result.eventos,
                 "linhas_other": result.linhas_other,
@@ -163,7 +164,7 @@ def fetch_reports(bq, ga4, reports, dates, sem_trafego: bool, log: bqh.RunLog) -
                     observacoes=sorted(result.observacoes) + ([f"relatorio={spec.name}"] if spec.name != report else []))
             print(f"API {spec.name:<22} {d}: {len(result.rows):>7} linhas, {result.eventos:>10} eventos"
                   f"{'  ' + ', '.join(sorted(result.observacoes)) if result.observacoes else ''}")
-        staging.replace_raw(bq, report, dates, all_rows)
+            del result
 
 
 def dry_run(bq, ga4, args, log: bqh.RunLog) -> None:

@@ -66,10 +66,13 @@ def ensure_tables(bq: bigquery.Client) -> None:
     bqh.run(bq, "\n".join(ddl))
 
 
-def replace_raw(bq: bigquery.Client, report: str, dates, data: list) -> None:
+def clear_raw(bq: bigquery.Client, report: str, dates) -> None:
     table = RAW_TABLES[report]
     bqh.run(bq, f"DELETE FROM `{table}` WHERE data IN ({bqh.dates_sql(dates)});")
-    bqh.load_json(bq, table, bq_schema(report), data)
+
+
+def append_raw(bq: bigquery.Client, report: str, data: list) -> None:
+    bqh.load_json(bq, RAW_TABLES[report], bq_schema(report), data)
 
 
 def prepare_main_sql(dates) -> str:
