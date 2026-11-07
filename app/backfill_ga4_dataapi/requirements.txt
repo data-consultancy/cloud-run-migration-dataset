@@ -1,0 +1,4 @@
+# Mesmas versões do bq-mirror-job (app/requirements.txt), que já estão na imagem.
+# Nada extra é necessário; este arquivo existe para rodar o módulo fora da imagem.
+google-cloud-bigquery==3.25.0
+google-analytics-data==0.18.7
